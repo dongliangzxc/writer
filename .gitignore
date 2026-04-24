@@ -1,0 +1,14 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# 小说项目内容（各书有独立 git）
+预知幻梦/
+
+# 临时文件
+ENDOFFILE
+EOF
+*.pyc
+__pycache__/
+.claude/scripts/__pycache__/
+.claude/scripts/**/__pycache__/
