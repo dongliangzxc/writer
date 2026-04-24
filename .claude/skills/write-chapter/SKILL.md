@@ -1,6 +1,6 @@
 ---
 name: write-chapter
-description: Writes webnovel chapters (default 1800-3000 words). Use when the user asks to write a chapter or runs /webnovel-write. Runs context, drafting, review, polish, and data extraction.
+description: Writes webnovel chapters (default 2000-3000 words). Use when the user asks to write a chapter or runs /webnovel-write. Runs context, drafting, review, polish, and data extraction.
 allowed-tools: Read Write Edit Grep Bash Task
 ---
 
@@ -26,7 +26,7 @@ allowed-tools: Read Write Edit Grep Bash Task
 ## 目标
 
 - 以稳定流程产出可发布章节：优先使用 `正文/第{NNNN}章-{title_safe}.md`；细纲无标题时，自动生成标题并写回细纲，始终产出带标题的文件。
-- 默认章节字数目标：1800-3000（用户或大纲明确覆盖时从其约定）。
+- 默认章节字数目标：2000-3000（用户或大纲明确覆盖时从其约定）。
 - 保证审查、润色、数据回写完整闭环，避免“写完即丢上下文”。
 - 输出直接可被后续章节消费的结构化数据：`review_metrics`、`summaries`、`chapter_meta`。
 
@@ -293,7 +293,7 @@ cat "${SKILL_ROOT}/../../references/shared/core-constraints.md"
 - **章末最后画面**：若执行包板块1包含"章末最后画面"，正文必须以该画面收束，**禁止在最后画面之后追加独处感悟、内心总结、环境收束等段落**。章节的最后一段就是那个画面。若执行包无此项，章节停在故事的自然停歇处
 - 只输出纯正文到章节正文文件；**标题来源优先级**：①详细大纲已有章节名 → 直接使用；②大纲无标题 → 根据本章核心事件/情绪自动生成 2-4 字标题，将生成的标题**写回细纲对应行**，并用于文件名和章节标题行。统一使用 `正文/第{chapter_padded}章-{title_safe}.md`，禁止输出无标题文件（`正文/第{chapter_padded}章.md` 格式不再使用）。
 - 章节标题行格式：`# 第{chapter_padded}章 {title}`（标题与章号之间空一格）。
-- 默认按 1800-3000 字执行；若大纲为关键战斗章/高潮章/卷末章或用户明确指定，则按大纲/用户优先，不以字数上限为由压缩高潮场景。
+- 默认按 2000-3000 字执行；若大纲为关键战斗章/高潮章/卷末章或用户明确指定，则按大纲/用户优先，不以字数上限为由压缩高潮场景。
 - 禁止占位符正文（如 `[TODO]`、`[待补充]`）。
 - 保留承接关系：若上章有明确钩子，本章必须回应（可部分兑现）。
 
