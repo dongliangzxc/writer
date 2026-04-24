@@ -247,6 +247,43 @@ ns["recent_endings"] = recent
 ]
 ```
 
+### Step E-ext3: narrative_state 回写（反派状态/已知事实/里程碑）
+
+> **2026-04-24 从 Step 5-ext 合并入 data-agent**。原由主 agent 单独执行，现由 data-agent 在实体提取后一并处理，减少一次 state.json 读写。
+
+**执行步骤**：
+
+1. 读取本章正文（已在 Step A 加载），分析以下三个维度：
+
+   **a) 反派状态变化**：本章各反派的状态是否有变化？（如"禁足中"→"联络镇南侯府"）
+   - 若无变化则保持原值不覆盖
+
+   **b) 新增确定性信息**：本章主角获得了哪些新的确定性信息？
+   - 必须是正文中明确呈现的事实，不可推断
+
+   **c) 里程碑完成**：本章完成了 `narrative_state.volume_milestones` 中的哪些里程碑？
+   - 对照正文判断，将完成的里程碑标记 `done=true` 和 `actual_chapter`
+
+2. 写入 `state.json`（与 Step D 的 state 写入合并，只写一次）：
+
+```python
+ns = state["protagonist_state"]["narrative_state"]
+
+# 反派状态
+if antagonist_updates:
+    ns.setdefault("antagonist_status", {}).update(antagonist_updates)
+
+# 已知事实
+if new_truths:
+    ns.setdefault("known_truths", []).extend(new_truths)
+
+# 里程碑
+for item in ns.get("volume_milestones", {}).get("items", []):
+    if item["id"] in completed_milestone_ids:
+        item["done"] = True
+        item["actual_chapter"] = chapter_num
+```
+
 ### Step F: AI 场景切片
 
 - 按地点/时间/视角切分场景
@@ -341,3 +378,4 @@ ns["recent_endings"] = recent
 7. ✅ 输出格式为有效 JSON
 8. ✅ recent_openings 已更新（最多保留最近 5 章，新章追加在末尾）
 9. ✅ recent_endings 已更新（最多保留最近 5 章，新章追加在末尾）
+10. ✅ narrative_state 回写完成（反派状态/已知事实/里程碑）

@@ -9,14 +9,14 @@ allowed-tools: Read Write Edit Grep Bash Task
 当此 skill 被调用时，必须按以下步骤执行，不能仅显示文档：
 
 1. 提取章节号参数（如 "第16章" → 16）
-2. 运行 Step 1: Context Agent（通过 Task 调用）
-3. 运行 Step 1-save: 执行包存档（Write 写入 tmp 目录）
-4. 运行 Step 1.5: 项目约束注入（主 agent 从 CLAUDE.md 提取本章适用约束）
+2. 运行 Step 0.5: 确定本章核心问题
+3. 运行 Step 1: Context Agent（通过 Task 调用，内含约束注入）
+4. 运行 Step 1-save: 执行包存档（Write 写入 tmp 目录）
 5. 运行 Step 2A: 正文起草（使用 Bash 或 Read/Write）
 6. 运行 Step 3: 审查（通过 Task 调用 structural-checker 等）
 7. 运行 Step 3.5: 机械扫描（必须用 Bash 执行 chapter_scan.py）
 8. 运行 Step 4: 润色（消费 Step 3 审查报告 + Step 3.5 扫描结果）
-9. 运行 Step 5: Data Agent（通过 Task 调用）
+9. 运行 Step 5: Data Agent（通过 Task 调用，内含 narrative_state 回写）
 10. 运行 Step 6: Git 备份
 
 禁止仅显示本文档内容而不执行 workflow。
@@ -40,8 +40,8 @@ allowed-tools: Read Write Edit Grep Bash Task
 
 ## 模式定义
 
-- `/webnovel-write`：Step 1 → 1.5 → 2A → 3 → 4 → 5 → 6（单章）
-- `/webnovel-write --minimal`：Step 1 → 1.5 → 2A → 3（仅核心2个联合审查器）→ 4 → 5 → 6（单章）
+- `/webnovel-write`：Step 0.5 → 1 → 1-save → 2A → 3 → 3.5 → 4 → 5 → 6（单章）
+- `/webnovel-write --minimal`：Step 0.5 → 1 → 1-save → 2A → 3（仅核心2个联合审查器）→ 3.5 → 4 → 5 → 6（单章）
 
 > Step 2B（独立风格转译）已合并入 Step 4，Step 4 在修复审查问题的同时完成风格转译，减少一次全文重写。
 
@@ -144,23 +144,7 @@ export PROJECT_ROOT="$(python -X utf8 "${SCRIPTS_DIR}/webnovel.py" --project-roo
 输出：
 - “已就绪输入”与“缺失输入”清单；缺失则阻断并提示先补齐。
 
-### Step 0.5：工作流断点记录（best-effort，不阻断）
-
-```bash
-python -X utf8 "${SCRIPTS_DIR}/webnovel.py" --project-root "${PROJECT_ROOT}" workflow start-task --command webnovel-write --chapter {chapter_num} || true
-python -X utf8 "${SCRIPTS_DIR}/webnovel.py" --project-root "${PROJECT_ROOT}" workflow start-step --step-id "Step 0.5" --step-name "Core Question Planning" || true
-python -X utf8 "${SCRIPTS_DIR}/webnovel.py" --project-root "${PROJECT_ROOT}" workflow complete-step --step-id "Step 0.5" --artifacts '{"ok":true}' || true
-python -X utf8 "${SCRIPTS_DIR}/webnovel.py" --project-root "${PROJECT_ROOT}" workflow start-step --step-id "Step 1" --step-name "Context Agent" || true
-python -X utf8 "${SCRIPTS_DIR}/webnovel.py" --project-root "${PROJECT_ROOT}" workflow complete-step --step-id "Step 1" --artifacts '{"ok":true}' || true
-python -X utf8 "${SCRIPTS_DIR}/webnovel.py" --project-root "${PROJECT_ROOT}" workflow complete-task --artifacts '{"ok":true}' || true
-```
-
-要求：
-- `--step-id` 仅允许：`Step 1` / `Step 2A` / `Step 2B` / `Step 3` / `Step 3.5` / `Step 4` / `Step 5` / `Step 6`。
-- 任何记录失败只记警告，不阻断写作。
-- 每个 Step 执行结束后，同样需要 `complete-step`（失败不阻断）。
-
-### Step 0.5（前置）：确定本章核心问题
+### Step 0.5：确定本章核心问题
 
 **必须在调用 context-agent 之前完成。**
 
@@ -263,62 +247,11 @@ PACK_EOF
 
 若 Write 失败，只记录警告，继续进入 Step 1.5。
 
-### Step 1.5：项目约束注入（主 agent 执行，Step 1-save 之后、Step 2A 之前）
+### Step 1.5：项目约束注入（已合并入 context-agent，无需主 agent 独立执行）
 
-> **目的**：将 CLAUDE.md 中与本章相关的约束提取出来，作为 2A 起草的硬性输入。防止写作模型在没有约束感知的情况下起草，导致感情线越阶、伏笔泄露、道具矛盾等系统性问题。
-
-**执行步骤**：
-
-1. **读取 CLAUDE.md**：主 agent 读取 `${PROJECT_ROOT}/CLAUDE.md`（整份文件）。
-
-2. **提取本章适用约束**，根据当前章节号 `chapter_num` 逐项提取：
-
-   **a) 感情线阶段锁**（CLAUDE.md 第一节）：
-   - 确定当前章节所在阶段（如 ch1-10 = 防备期，ch11-25 = 动摇期……）
-   - 提取该阶段的"允许的最大行为"和"绝对禁止"
-   - 提取该阶段的"典型违规行为速查"列表
-
-   **b) 伏笔时机锁**（CLAUDE.md 第二节）：
-   - 扫描伏笔表，找出"最早允许揭晓章 > 当前章号"的所有伏笔
-   - 这些伏笔的"具体禁令"必须注入禁止事项
-   - 若本章涉及替嫁相关情节，额外注入"替嫁知情伏笔操作细则"
-
-   **c) 道具注册表**（CLAUDE.md 第三节）：
-   - 扫描执行包正文，找出提及的所有已注册道具
-   - 提取这些道具的约束（如"全书仅此一次赠送"、"非谢沉渊亲手制作"等）
-
-   **d) 预知能力规则**（CLAUDE.md 第四节）：
-   - 若本章有预知梦场景，提取当前章号对应的代价等级和禁止事项
-
-3. **输出格式**（主 agent 在上下文中保留，供 Step 2A 直接消费）：
-
-```
-═══════════════════════════════════════
-【写作红线 — 第{chapter_num}章适用约束】
-═══════════════════════════════════════
-
-▶ 感情线阶段：{阶段名}（ch{范围}，trust {区间}）
-  允许上限：{允许的最大行为}
-  绝对禁止：{绝对禁止行为}
-  本阶段易踩雷行为：
-  - {逐条列出该阶段的典型违规行为}
-
-▶ 伏笔保护（以下伏笔本章不得揭示/暗示）：
-  - {伏笔名}：{具体禁令}
-  ...
-
-▶ 道具约束（本章涉及的道具）：
-  - {道具名}：{约束}
-  ...
-
-▶ 预知能力（若本章有梦境）：
-  - 代价等级：{当前等级}
-  - 禁止：{禁止事项}
-
-═══════════════════════════════════════
-```
-
-**硬门槛**：此输出必须在 Step 2A 起草前完成。若 CLAUDE.md 不存在，记录警告但不阻断（向后兼容）。
+> **2026-04-24 变更**：约束注入逻辑已合并入 context-agent 的 Step 4.5。context-agent 在组装执行包时会自动读取 CLAUDE.md 并将感情线阶段锁、伏笔时机锁、道具约束、预知能力规则直接嵌入板块4/5。主 agent 无需再独立执行此步骤。
+>
+> 主 agent 在 Step 2A 起草前仍需确认执行包中包含约束信息（见"写作红线确认"）。
 
 ---
 
@@ -370,15 +303,7 @@ cat "${SKILL_ROOT}/../../references/shared/core-constraints.md"
 - **禁止英文结论话术**：正文、审查说明、润色说明、变更摘要、最终报告中不得出现 Overall / PASS / FAIL / Summary / Conclusion 等英文结论标题。
 - **英文仅限机器标识**：CLI flag（`--fast`）、checker id（`consistency-checker`）、DB 字段名（`anti_ai_force_check`）、JSON 键名等不可改的接口名保持英文，其余一律使用简体中文。
 
-**写作三问（起草时每500字回头检查）**：
-1. 本章读者收获是什么？**三选一**：
-   - 信息增量："原来如此"/"比我想的更危险"
-   - 情感增量："这个感觉真好"/"好甜"
-   - 悬念增量："好想看下一章"/"她会怎么做"
-2. 这段是回答了核心问题，还是在绕远路？
-3. 读者读到某段会不会觉得"然后呢"？（如果会，说明在凑字数）
-
-**禁止流水账**：不得出现"谁做了什么、谁又做了什么、再做了什么"的纯事件罗列。每段必须服务于"三选一"的本章核心目标。
+**禁止流水账**：不得出现"谁做了什么、谁又做了什么、再做了什么"的纯事件罗列。每段必须服务于本章核心目标——在信息增量、情感增量、悬念增量中至少交付一种。
 
 **场景质感清单（Soft — 每个情感/关键场景写前必须填）**：
 
@@ -414,17 +339,18 @@ cat "${SKILL_ROOT}/references/step-3-review-gate.md"
 - 可并行发起审查，统一汇总 `issues/severity/overall_score`。
 - 默认使用 `auto` 路由：根据"本章执行合同 + 正文信号 + 大纲标签"动态选择审查器。
 
-核心审查器（始终执行，共 2 个 Task）：
+核心审查器（始终执行，共 3 个 Task）：
 - `structural-checker`（内含 consistency-checker + continuity-checker）
 - `character-rhythm-checker`（内含 ooc-checker；pacing-checker 在 agent 内按章号条件触发）
+- `reader-quality-checker`（场景三增量/流水账检测/高潮质量评估）
 
 条件审查器（仅在特定场景启用）：
 - `reader-pull-checker`（仅弧末章/卷末章/用户显式要求时启用，日常章节不跑）
 - `high-point-checker`（关键章/高潮章/卷末章/有高光信号时启用）
 
 模式说明：
-- 标准：核心 2 个 Task + 条件审查器（按上述规则触发）
-- `--minimal`：只跑核心 2 个 Task（忽略条件审查器）
+- 标准：核心 3 个 Task + 条件审查器（按上述规则触发）
+- `--minimal`：只跑核心 2 个 Task（structural-checker + character-rhythm-checker，不含 reader-quality-checker 和条件审查器）
 
 审查指标落库（必做）：
 ```bash
@@ -553,54 +479,9 @@ Step 5 失败隔离规则：
 - `data_agent_timing.jsonl`：Data Agent 内部各子步骤耗时。
 - 当外层总耗时远大于内层 timing 之和时，默认先归因为 agent 启动与环境探测开销。
 
-### Step 5-ext：narrative_state 回写（主 agent 直接执行，不经子 agent）
+### Step 5-ext：narrative_state 回写（已合并入 data-agent，无需主 agent 独立执行）
 
-> data-agent Task 完成后，主 agent 直接读取本章正文，更新 state.json 的叙事状态字段。
-
-执行以下 Python 脚本（由主 agent 调用 Bash 工具直接运行）：
-
-```bash
-python3 - << 'PYEOF'
-import json
-from pathlib import Path
-
-PROJECT_ROOT = "{PROJECT_ROOT}"
-chapter_file = Path(PROJECT_ROOT) / "正文/第{chapter_padded}章-{title_safe}.md"
-state_path = Path(PROJECT_ROOT) / ".webnovel/state.json"
-
-with open(state_path, encoding='utf-8') as f:
-    state = json.load(f)
-
-ns = state.setdefault('protagonist_state', {}).setdefault('narrative_state', {})
-
-# ── 主 agent 在运行此脚本前，必须先读正文并填入以下三处变量 ──
-
-# 1. 本章各反派状态是否有变化？若无变化则保持空字典（不覆盖原值）
-antagonist_updates = {
-    # 示例："谢明姝": "禁足中（ch16起第2天）；已联络镇南侯府"
-}
-
-# 2. 本章苏绾音获得了哪些新的确定性信息？无则留空列表
-new_truths = []
-
-# 3. 本章完成了哪些里程碑 id？对照正文判断，如 ['ch17_周瑾瑜']
-completed_milestone_ids = []
-
-# ── 自动写回 ──
-if antagonist_updates:
-    ns.setdefault('antagonist_status', {}).update(antagonist_updates)
-if new_truths:
-    ns.setdefault('known_truths', []).extend(new_truths)
-for item in ns.get('volume_milestones', {}).get('items', []):
-    if item['id'] in completed_milestone_ids:
-        item['done'] = True
-        item['actual_chapter'] = {chapter_num}
-
-with open(state_path, 'w', encoding='utf-8') as f:
-    json.dump(state, f, ensure_ascii=False, indent=2)
-print("narrative_state 回写完成")
-PYEOF
-```
+> **2026-04-24 变更**：narrative_state 回写（反派状态/已知事实/里程碑）已合并入 data-agent 的 Step E-ext3。data-agent 在实体提取后一并处理，减少一次 state.json 读写。主 agent 无需再手动执行此步骤。
 
 ### Step 6：Git 备份（可失败但需说明）
 
