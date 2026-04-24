@@ -5,6 +5,9 @@ Thumbs.db
 # 小说项目内容（各书有独立 git）
 预知幻梦/
 
+# 本地环境指针
+.claude/.webnovel-current-project
+
 # 临时文件
 ENDOFFILE
 EOF
