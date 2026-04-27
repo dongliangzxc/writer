@@ -1,18 +1,61 @@
 #!/usr/bin/env python3
 """
-章节机械扫描（ABCD四层）
-用法: python3 chapter_scan.py <章节文件路径>
+章节机械扫描（ABCD四层 + 跨章E层）
+用法:
+  python3 chapter_scan.py <章节文件路径>           # 单章扫描（ABCD层）
+  python3 chapter_scan.py --cross <文件1> <文件2> ... # 跨章扫描（E层）
+  python3 chapter_scan.py --cross-dir <目录>       # 扫描目录下所有章节
 
 输出润色阶段的强制修改目标：
-  A层: 高频重复短语
+  A层: 高频重复短语（排除对话标记）
   B层: 高频句式词
   C层: 重复句式模式
   D层: 内心独白注水检测
+  E层: 跨章磨损句式检测（仅 --cross/--cross-dir 模式）
 """
 
 import re
 import sys
+import os
 import collections
+import glob as globmod
+
+
+# ── 对话标记排除名单 ──
+# 这些是功能性对话归属标记，不算磨损句式
+DIALOGUE_TAG_PATTERNS = re.compile(
+    r"^[\u4e00-\u9fff]{1,4}(说|道|问|答|喊|叫|笑道|冷笑|低声|轻声|沉声|淡淡|缓缓)$"
+)
+
+# 角色名/专有名词（不算重复）
+KNOWN_NAMES = {
+    "苏绾音", "谢沉渊", "春桃", "谢明姝", "周瑾瑜", "容贵妃",
+    "苏婉容", "谢青", "定北侯", "镇南侯",
+}
+
+
+def is_dialogue_tag(phrase):
+    """判断是否为对话标记（如"苏绾音说""他道""她问"）"""
+    if DIALOGUE_TAG_PATTERNS.match(phrase):
+        return True
+    # 检查 "XX说/道/问" 格式
+    for name in KNOWN_NAMES:
+        if phrase.startswith(name) and len(phrase) > len(name):
+            suffix = phrase[len(name):]
+            if suffix in ("说", "道", "问", "答", "笑道", "冷笑", "低声道", "沉声道", "淡淡道"):
+                return True
+    return False
+
+
+def is_name_or_noun(phrase):
+    """判断是否为角色名或高频专有名词"""
+    if phrase in KNOWN_NAMES:
+        return True
+    # 带称呼的变体
+    for name in KNOWN_NAMES:
+        if phrase == name or phrase.startswith(name) and len(phrase) <= len(name) + 2:
+            return True
+    return False
 
 
 def scan_chapter(filepath):
@@ -26,14 +69,18 @@ def scan_chapter(filepath):
 
     lines = [l.strip() for l in text.split("\n") if l.strip() and not l.startswith("#")]
 
-    # ── A层: 3-8字短语重复 ──
+    # ── A层: 3-8字短语重复（排除对话标记和角色名） ──
     phrases = re.findall(r"[\u4e00-\u9fff]{3,8}", text)
     counts = collections.Counter(phrases)
-    repeats = [(p, c) for p, c in counts.most_common(30) if c >= 3]
+    repeats = [
+        (p, c)
+        for p, c in counts.most_common(30)
+        if c >= 3 and not is_dialogue_tag(p) and not is_name_or_noun(p)
+    ]
     if repeats:
-        print("【A. 高频重复短语（≥3次）- 非角色名的必须替换】")
+        print("【A. 高频重复短语（≥3次）- 必须替换】")
         for phrase, count in repeats[:15]:
-            print(f"  「{phrase}」{count}次 → 角色名/专有名词保留，其余最多留2次")
+            print(f"  「{phrase}」{count}次 → 最多留2次，其余替换")
     else:
         print("【A】✅ 通过")
 
@@ -107,9 +154,7 @@ def scan_chapter(filepath):
             continue
         cjk_count = len(re.findall(r"[\u4e00-\u9fff]", para))
         if cjk_count > 150:
-            # 超长段落按句号/问号/感叹号切分
             sentences = re.split(r"(?<=[。！？])", para)
-            # 每2-3句合为一个逻辑段
             chunk = ""
             for s in sentences:
                 chunk += s
@@ -145,6 +190,8 @@ def scan_chapter(filepath):
     cross_para = collections.Counter()
     for phrase, count in counts.most_common(50):
         if count >= 4 and len(phrase) >= 4:
+            if is_dialogue_tag(phrase) or is_name_or_noun(phrase):
+                continue
             para_count = sum(1 for p in smart_paragraphs if phrase in p)
             if para_count >= 3:
                 cross_para[phrase] = para_count
@@ -196,8 +243,158 @@ def scan_chapter(filepath):
     return 0 if not abc_issues else 1
 
 
+# ── E层: 跨章磨损句式检测 ──
+
+# 已知磨损句式词典（从 review-chapter 同步）
+KNOWN_WORN_PHRASES = [
+    "手指在袖中收紧", "手指在桌面上敲", "看了她很久", "看了他很久",
+    "像一块石头落进", "像石头落进水里", "像石头砸进水里",
+    "手指在窗棂上", "目光很深", "目光落在",
+    "没有说话", "沉默了一会儿", "安静了很久",
+    "声音不高", "声音很轻", "声音很平",
+    "手指收紧", "指尖收紧", "攥紧了",
+]
+
+
+def scan_cross_chapter(filepaths):
+    """跨章扫描：检测同一短语/句式在多个章节重复出现"""
+    if len(filepaths) < 2:
+        print("跨章扫描至少需要2个文件")
+        return 0
+
+    # 按章号排序
+    filepaths = sorted(filepaths)
+    chapter_count = len(filepaths)
+    print(f"【E. 跨章磨损句式检测】扫描 {chapter_count} 个章节")
+    print(f"  文件: {', '.join(os.path.basename(f) for f in filepaths)}")
+    print()
+
+    # 读取所有章节
+    chapter_texts = {}
+    for fp in filepaths:
+        with open(fp, encoding="utf-8") as f:
+            chapter_texts[fp] = f.read()
+
+    e_issues = []
+
+    # E1: 已知磨损句式跨章检测
+    print("  [E1. 已知磨损句式]")
+    e1_hits = []
+    for phrase in KNOWN_WORN_PHRASES:
+        chapters_with = []
+        for fp, text in chapter_texts.items():
+            if phrase in text:
+                count_in_chapter = text.count(phrase)
+                chapters_with.append((os.path.basename(fp), count_in_chapter))
+        if len(chapters_with) >= 3:
+            e1_hits.append((phrase, chapters_with))
+
+    if e1_hits:
+        for phrase, chapters in sorted(e1_hits, key=lambda x: -len(x[1])):
+            ch_str = ", ".join(f"{ch}({c}次)" for ch, c in chapters)
+            print(f"    「{phrase}」→ 出现在 {len(chapters)}/{chapter_count} 章: {ch_str}")
+        e_issues.extend(e1_hits)
+    else:
+        print("    ✅ 已知磨损句式未超标")
+
+    # E2: 自动发现跨章高频短语（4-8字，出现在≥3章，排除对话标记和角色名）
+    print()
+    print("  [E2. 自动发现跨章重复短语]")
+    phrase_chapters = collections.defaultdict(set)
+    phrase_total = collections.Counter()
+
+    for fp, text in chapter_texts.items():
+        phrases = re.findall(r"[\u4e00-\u9fff]{4,8}", text)
+        local_counts = collections.Counter(phrases)
+        for phrase, count in local_counts.items():
+            if is_dialogue_tag(phrase) or is_name_or_noun(phrase):
+                continue
+            phrase_chapters[phrase].add(fp)
+            phrase_total[phrase] += count
+
+    # 找出出现在≥3章的短语
+    cross_chapter_repeats = [
+        (phrase, len(chapters), phrase_total[phrase])
+        for phrase, chapters in phrase_chapters.items()
+        if len(chapters) >= 3
+    ]
+    # 按章节覆盖数排序
+    cross_chapter_repeats.sort(key=lambda x: (-x[1], -x[2]))
+
+    if cross_chapter_repeats:
+        for phrase, ch_count, total in cross_chapter_repeats[:15]:
+            # 找到具体是哪些章节
+            ch_names = sorted(os.path.basename(fp) for fp in phrase_chapters[phrase])
+            print(f"    「{phrase}」→ {ch_count}/{chapter_count}章, 共{total}次: {', '.join(ch_names[:5])}")
+        e_issues.extend(cross_chapter_repeats)
+    else:
+        print("    ✅ 未发现跨章高频短语")
+
+    # E3: 跨章句式模式检测
+    print()
+    print("  [E3. 跨章句式模式]")
+    cross_patterns = {
+        r"手指在[袖桌窗案椅][\u4e00-\u9fff]{0,2}[收攥敲停]": "手指在XX+动作",
+        r"看了[她他]很久": "看了TA很久",
+        r"像[一]?[块颗滴][\u4e00-\u9fff]{1,4}[落砸沉]": "像XX落/砸/沉（比喻）",
+        r"[她他]不知道[\u4e00-\u9fff]{0,8}": "TA不知道...",
+        r"声音[很不][轻高低淡平沉]": "声音+程度+形容词",
+    }
+    e3_hits = []
+    for pat, label in cross_patterns.items():
+        chapters_with = []
+        for fp, text in chapter_texts.items():
+            matches = re.findall(pat, text)
+            if matches:
+                chapters_with.append((os.path.basename(fp), len(matches)))
+        if len(chapters_with) >= 3:
+            e3_hits.append((label, chapters_with))
+
+    if e3_hits:
+        for label, chapters in sorted(e3_hits, key=lambda x: -len(x[1])):
+            ch_str = ", ".join(f"{ch}({c}次)" for ch, c in chapters)
+            print(f"    [{label}] → {len(chapters)}/{chapter_count}章: {ch_str}")
+        e_issues.extend(e3_hits)
+    else:
+        print("    ✅ 跨章句式模式未超标")
+
+    print()
+    if e_issues:
+        print(f"【跨章扫描完成 - 发现 {len(e_issues)} 项磨损问题】")
+        print("  修复建议：同一短语/句式在连续5章内最多出现2次，超出部分替换为不同写法")
+    else:
+        print("【跨章扫描完成 - 全部通过】")
+
+    return 1 if e_issues else 0
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("用法: python3 chapter_scan.py <章节文件路径>")
+        print("用法:")
+        print("  python3 chapter_scan.py <章节文件路径>           # 单章扫描")
+        print("  python3 chapter_scan.py --cross <文件1> <文件2> ... # 跨章扫描")
+        print("  python3 chapter_scan.py --cross-dir <目录>       # 扫描目录下所有章节")
         sys.exit(1)
-    sys.exit(scan_chapter(sys.argv[1]))
+
+    if sys.argv[1] == "--cross":
+        files = sys.argv[2:]
+        if not files:
+            print("请提供至少2个文件路径")
+            sys.exit(1)
+        sys.exit(scan_cross_chapter(files))
+    elif sys.argv[1] == "--cross-dir":
+        if len(sys.argv) < 3:
+            print("请提供目录路径")
+            sys.exit(1)
+        directory = sys.argv[2]
+        # 可选：指定最近N章（默认10）
+        recent_n = int(sys.argv[3]) if len(sys.argv) > 3 else 10
+        files = sorted(globmod.glob(os.path.join(directory, "第*章*.md")))
+        if not files:
+            print(f"目录 {directory} 下未找到章节文件")
+            sys.exit(1)
+        # 取最近N章
+        files = files[-recent_n:]
+        sys.exit(scan_cross_chapter(files))
+    else:
+        sys.exit(scan_chapter(sys.argv[1]))

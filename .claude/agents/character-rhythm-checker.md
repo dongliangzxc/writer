@@ -40,7 +40,7 @@ model: inherit
 - 用户输入中含 "节奏审查" 关键词
 
 ```bash
-python -X utf8 "/Users/dongliang04/Documents/个人/小说/女频/.claude/scripts/webnovel.py" \
+python -X utf8 "${WORKSPACE_ROOT}/.claude/scripts/webnovel.py" \
   --project-root "${PROJECT_ROOT}" status -- --focus strand
 ```
 

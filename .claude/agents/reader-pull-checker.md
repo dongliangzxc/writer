@@ -11,8 +11,8 @@ model: inherit
 
 ## 核心参考
 
-- **分类法**: `/Users/dongliang04/Documents/个人/小说/女频/.claude/references/reading-power-taxonomy.md`
-- **题材画像**: `/Users/dongliang04/Documents/个人/小说/女频/.claude/references/genre-profiles.md`
+- **分类法**: `.claude/references/reading-power-taxonomy.md`
+- **题材画像**: `.claude/references/genre-profiles.md`
 - **章节追读力数据**: `index.db → chapter_reading_power`
 - **上章钩子**: `state.json → chapter_meta` 或 `index.db`
 

@@ -9,15 +9,14 @@ allowed-tools: Read Write Edit Grep Bash Task
 当此 skill 被调用时，必须按以下步骤执行，不能仅显示文档：
 
 1. 提取章节号参数（如 "第16章" → 16）
-2. 运行 Step 0.5: 确定本章核心问题
-3. 运行 Step 1: Context Agent（通过 Task 调用，内含约束注入）
+2. 运行 Step 0: 预检与环境设置
+3. 运行 Step 1: 上下文搜集与执行包组装（主 Agent 内联，加载 context-guide 参考）
 4. 运行 Step 1-save: 执行包存档（Write 写入 tmp 目录）
-5. 运行 Step 2A: 正文起草（使用 Bash 或 Read/Write）
-6. 运行 Step 3: 审查（通过 Task 调用 structural-checker 等）
-7. 运行 Step 3.5: 机械扫描（必须用 Bash 执行 chapter_scan.py）
-8. 运行 Step 4: 润色（消费 Step 3 审查报告 + Step 3.5 扫描结果）
-9. 运行 Step 5: Data Agent（通过 Task 调用，内含 narrative_state 回写）
-10. 运行 Step 6: Git 备份
+5. 运行 Step 2: 正文起草（主 Agent）
+6. 运行 Step 3: 自审 + 机械扫描（主 Agent 内联审查 + Bash 执行 chapter_scan.py）
+7. 运行 Step 4: 润色（消费 Step 3 审查报告 + 扫描结果，1 轮）
+8. 运行 Step 5: Data Agent（通过 Task 调用）
+9. 运行 Step 6: Git 备份
 
 禁止仅显示本文档内容而不执行 workflow。
 
@@ -27,23 +26,21 @@ allowed-tools: Read Write Edit Grep Bash Task
 
 - 以稳定流程产出可发布章节：优先使用 `正文/第{NNNN}章-{title_safe}.md`；细纲无标题时，自动生成标题并写回细纲，始终产出带标题的文件。
 - 默认章节字数目标：2000-3000（用户或大纲明确覆盖时从其约定）。
-- 保证审查、润色、数据回写完整闭环，避免“写完即丢上下文”。
+- 保证审查、润色、数据回写完整闭环，避免"写完即丢上下文"。
 - 输出直接可被后续章节消费的结构化数据：`review_metrics`、`summaries`、`chapter_meta`。
 
 ## 执行原则
 
 1. 先校验输入完整性，再进入写作流程；缺关键输入时立即阻断。
-2. 审查与数据回写是硬步骤，`--fast`/`--minimal` 只允许降级可选环节。
+2. 审查与数据回写是硬步骤，`--minimal` 只允许降级可选环节。
 3. 参考资料严格按步骤按需加载，不一次性灌入全部文档。
 4. Step 4 同时负责问题修复与风格转译（2B 已合并入 Step 4）。
 5. 任一步失败优先做最小回滚，不重跑全流程。
 
 ## 模式定义
 
-- `/webnovel-write`：Step 0.5 → 1 → 1-save → 2A → 3 → 3.5 → 4 → 5 → 6（单章）
-- `/webnovel-write --minimal`：Step 0.5 → 1 → 1-save → 2A → 3（仅核心2个联合审查器）→ 3.5 → 4 → 5 → 6（单章）
-
-> Step 2B（独立风格转译）已合并入 Step 4，Step 4 在修复审查问题的同时完成风格转译，减少一次全文重写。
+- `/webnovel-write`：Step 0 → 1 → 1-save → 2 → 3 → 4 → 5 → 6（单章）
+- `/webnovel-write --minimal`：Step 0 → 1 → 1-save → 2 → 3（仅结构+角色维度，跳过精彩度）→ 4 → 5 → 6（单章）
 
 最小产物：
 - `正文/第{NNNN}章-{title_safe}.md`（始终带标题）
@@ -53,18 +50,17 @@ allowed-tools: Read Write Edit Grep Bash Task
 
 ### 流程硬约束（禁止事项）
 
-- **禁止并步**：不得将两个 Step 合并为一个动作执行（如同时做 2A 和 3）。
+- **禁止并步**：不得将两个 Step 合并为一个动作执行（如同时做 2 和 3）。
 - **禁止跳步**：不得跳过未被模式定义标记为可跳过的 Step。
 - **禁止临时改名**：不得将 Step 的输出产物改写为非标准文件名或格式。
 - **禁止自创模式**：`--minimal` 只允许按上方定义裁剪步骤，不允许自创混合模式、"半步"或"简化版"。
-- **禁止自审替代**：Step 3 审查必须由 Task 子代理执行，主流程不得内联伪造审查结论。
 - **禁止源码探测**：脚本调用方式以本文档与 data-agent 文档中的命令示例为准，命令失败时查日志定位问题，不去翻源码学习调用方式。
 
 ## 引用加载等级（strict, lazy）
 
 - L0：未进入对应步骤前，不加载任何参考文件。
-- L1：每步仅加载该步“必读”文件。
-- L2：仅在触发条件满足时加载“条件必读/可选”文件。
+- L1：每步仅加载该步"必读"文件。
+- L2：仅在触发条件满足时加载"条件必读/可选"文件。
 
 路径约定：
 - `references/...` 相对当前 skill 目录。
@@ -74,12 +70,15 @@ allowed-tools: Read Write Edit Grep Bash Task
 
 ### 根目录
 
-- `references/step-3-review-gate.md`
-  - 用途：Step 3 审查调用模板、汇总格式、落库 JSON 规范。
-  - 触发：Step 3 必读。
+- `references/context-guide.md`
+  - 用途：Step 1 上下文搜集的 CLI 命令、文件清单、执行包 5 板块格式、章形/时间模式定义、红线校验。
+  - 触发：Step 1 必读。
 - `../../references/shared/core-constraints.md`
-  - 用途：Step 2A 写作硬约束（大纲即法律 / 设定即物理 / 发明需识别）。
-  - 触发：Step 2A 必读。
+  - 用途：Step 2 写作硬约束（大纲即法律 / 设定即物理 / 发明需识别）。
+  - 触发：Step 2 必读。
+- `references/step-3-review-gate.md`
+  - 用途：Step 3 内联审查的维度清单与评分规范。
+  - 触发：Step 3 必读。
 - `references/polish-guide.md`
   - 用途：Step 4 问题修复、风格转译（含原 2B 逻辑）、Anti-AI 与 No-Poison 规则。
   - 触发：Step 4 必读。
@@ -89,14 +88,11 @@ allowed-tools: Read Write Edit Grep Bash Task
 - `../../references/genre-profiles.md`
   - 用途：Step 1（内置 Contract）按题材配置节奏阈值与钩子偏好。
   - 触发：Step 1 当 `state.project.genre` 已知时加载。
-- `references/writing/genre-hook-payoff-library.md`
-  - 用途：电竞/直播文/克苏鲁的钩子与微兑现快速库。
-  - 触发：Step 1 题材命中 `esports/livestream/cosmic-horror` 时必读。
 
 ### writing（问题定向加读）
 
 - `references/writing/combat-scenes.md`
-  - 触发：战斗章或审查命中“战斗可读性/镜头混乱”。
+  - 触发：战斗章或审查命中"战斗可读性/镜头混乱"。
 - `references/writing/dialogue-writing.md`
   - 触发：审查命中 OOC、对话说明书化、对白辨识差。
 - `references/writing/emotion-psychology.md`
@@ -109,8 +105,9 @@ allowed-tools: Read Write Edit Grep Bash Task
 ## 工具策略（按需）
 
 - `Read/Grep`：读取 `state.json`、大纲、章节正文与参考文件。
-- `Bash`：运行 `extract_chapter_context.py`、`index_manager`、`workflow_manager`。
-- `Task`：调用 `context-agent`、审查 subagent、`data-agent` 并行执行。
+- `Bash`：运行 `extract_chapter_context.py`、`index_manager`、`workflow_manager`、`chapter_scan.py`。
+- `Task`：调用 `data-agent`（Step 5）。
+- 条件 Task：仅在关键章（弧末/卷末/高潮）时调用 `reader-pull-checker` 或 `high-point-checker`。
 
 ## 交互流程
 
@@ -118,20 +115,20 @@ allowed-tools: Read Write Edit Grep Bash Task
 
 必须做：
 - 解析真实书项目根（book project_root）：必须包含 `.webnovel/state.json`。
-- 校验核心输入：`大纲/总纲.md`、`/Users/dongliang04/Documents/个人/小说/女频/.claude/scripts/extract_chapter_context.py` 存在。
+- 校验核心输入：`大纲/总纲.md`、`${SCRIPTS_DIR}/extract_chapter_context.py` 存在。
 - 规范化变量：
   - `WORKSPACE_ROOT`：Claude Code 打开的工作区根目录（可能是书项目的父目录，例如 `D:\wk\xiaoshuo`）
   - `PROJECT_ROOT`：真实书项目根目录（必须包含 `.webnovel/state.json`，例如 `D:\wk\xiaoshuo\凡人资本论`）
-  - `SKILL_ROOT`：skill 所在目录（固定 `/Users/dongliang04/Documents/个人/小说/女频/.claude/skills/write-chapter`，指向项目级，references 可定制）
-  - `SCRIPTS_DIR`：脚本目录（固定 `/Users/dongliang04/Documents/个人/小说/女频/.claude/scripts`）
+  - `SKILL_ROOT`：skill 所在目录（`${WORKSPACE_ROOT}/.claude/skills/write-chapter`，指向项目级，references 可定制）
+  - `SCRIPTS_DIR`：脚本目录（`${WORKSPACE_ROOT}/.claude/scripts`）
   - `chapter_num`：当前章号（整数）
   - `chapter_padded`：四位章号（如 `0007`）
 
 环境设置（bash 命令执行前）：
 ```bash
 export WORKSPACE_ROOT="${CLAUDE_PROJECT_DIR:-$PWD}"
-export SCRIPTS_DIR="/Users/dongliang04/Documents/个人/小说/女频/.claude/scripts"
-export SKILL_ROOT="/Users/dongliang04/Documents/个人/小说/女频/.claude/skills/write-chapter"
+export SCRIPTS_DIR="${WORKSPACE_ROOT}/.claude/scripts"
+export SKILL_ROOT="${WORKSPACE_ROOT}/.claude/skills/write-chapter"
 
 echo "【项目级 skill 已激活】SKILL_ROOT=${SKILL_ROOT}"
 
@@ -142,120 +139,52 @@ export PROJECT_ROOT="$(python -X utf8 "${SCRIPTS_DIR}/webnovel.py" --project-roo
 **硬门槛**：`preflight` 必须成功。它统一校验 `SCRIPTS_DIR`、`webnovel.py`、`extract_chapter_context.py` 和解析出的 `PROJECT_ROOT`。任一失败都立即阻断。
 
 输出：
-- “已就绪输入”与“缺失输入”清单；缺失则阻断并提示先补齐。
-
-### Step 0.5：确定本章核心问题
-
-**必须在调用 context-agent 之前完成。**
-
-主 agent 先读取细纲本章条目，然后回答：
-
-```
-【本章核心问题规划】
-
-1. 本章的核心问题是什么？（一句话）
-   → 这个事件逼谁做出什么选择？
-
-2. 本章必须让读者知道什么？（信息增量）
-   → 读完本章，读者知道了什么之前不知道的？
-
-3. 本章会引发什么新问题？（悬念增量）
-   → 读完本章，读者最想知道什么？
-
-如果这三个问题回答不了，说明这章没有实质内容：
-- 要么：合并到其他章
-- 要么：重新想清楚这章的写作方向
-- 要么：与用户确认这章是否需要写
-```
-
-**输出：** 将这三个问题及答案写入执行包的任务书第一行。
+- "已就绪输入"与"缺失输入"清单；缺失则阻断并提示先补齐。
 
 ---
 
-### Step 1：Context Agent（内置 Context Contract，生成直写执行包）
+### Step 1：上下文搜集与执行包组装（主 Agent 内联）
 
-**调用前**：从 `state.json` 读取 `protagonist_state.narrative_state`，提取以下字段注入 Task prompt：
-
+执行前必须加载：
 ```bash
-python3 -c "
-import json, sys
-with open('${PROJECT_ROOT}/.webnovel/state.json', encoding='utf-8') as f:
-    s = json.load(f)
-ns = s.get('protagonist_state', {}).get('narrative_state', {})
-print('【项目级叙事状态注入 - 必须写入执行包】')
-print(f'感情线当前阶段: {ns.get(\"emotion_line_phase\", \"未知\")}')
-print(f'反派状态: {json.dumps(ns.get(\"antagonist_status\", {}), ensure_ascii=False)}')
-print(f'已揭示事实: {ns.get(\"known_truths\", [])}')
-pending = [m for m in ns.get('volume_milestones', {}).get('items', []) if not m.get('done')]
-print(f'未完成里程碑: {[m[\"id\"]+\": \"+m[\"desc\"] for m in pending[:5]]}')
-# 意象使用追踪（防重复）
-metaphors = ns.get('active_metaphors', {})
-if metaphors:
-    print('【意象使用追踪 - 写作时必须遵守】')
-    for name, info in metaphors.items():
-        count = info.get('usage_count', 0)
-        status = info.get('status', '')
-        rule = info.get('next_use_rule', '')
-        print(f'  {name}: 已用{count}次（ch{info.get(\"used_chapters\", [])}）| 状态: {status} | 规则: {rule}')
-"
+cat "${SKILL_ROOT}/references/context-guide.md"
 ```
 
-使用 Task 调用 `context-agent`，参数：
-- `chapter`
-- `project_root`
-- `storage_path=.webnovel/`
-- `state_file=.webnovel/state.json`
-- 上方脚本输出的叙事状态文本，作为额外 prompt 追加到 Task 调用中
+按 `context-guide.md` 中的指引依次执行：
+
+1. **运行 CLI 命令**：context 快照 + extract-context + 按需查询（章节模式/实体）
+2. **读取文件**：细纲、state.json、上章正文、上上章末尾 300 字、上章摘要、CLAUDE.md、时间线表（可选）
+3. **分析判定**：承接上章、场景状态、伏笔筛选、角色推断
+4. **组装 5 板块执行包**（含核心三问、CLAUDE.md 约束注入）
+5. **红线校验**：5 项自检通过后输出
 
 硬要求：
-- 若 `state` 或大纲不可用，立即阻断并返回缺失项。
+- 若 `state.json` 或大纲不可用，立即阻断并返回缺失项
 - 输出必须是简洁的 5 板块执行包：
-  - 板块1：本章写什么（核心任务、硬/中约束、核心冲突、局面变化）
-  - 板块2：从哪里接上（上章结束状态、承接逻辑）
+  - 板块1：本章写什么（核心三问、章形、时间模式、硬/中约束、核心冲突、章末画面）
+  - 板块2：从哪里接上（场景快照、承接方式、断裂禁止）
   - 板块3：出场角色（状态、动机、情绪底色、红线）
-  - 板块4：不可变事实（大纲/设定/承接事实、到期伏笔）
-  - 板块5：禁止事项（不超过 7 条）
-- **禁止输出以下内容**：追读力策略、钩子类型/强度建议、微兑现建议、场景质感清单模板、终检清单、Context Contract 独立层。
+  - 板块4：不可变事实（大纲/设定/承接事实、到期伏笔、感情线/道具约束）
+  - 板块5：禁止事项（不超过 9 条）
+- **钩子承接规则**：
+  - 剧情承诺兑现（硬性）：上章钩子承诺的事件/信息必须在本章落地
+  - 意象传承：禁止原词复用；若 `active_metaphors` 中该意象已用 ≥2 次，写入禁止事项
+- 合同与任务书冲突时，以大纲与设定约束更严格者为准
 
-**【时间结构】字段已废止（2026-04-19移除）**。时间推进由故事流自行决定，不强制”一章=一天”，不设单日/跨日框架限制。
-- 合同与任务书出现冲突时，以”大纲与设定约束更严格者”为准。
-- **钩子承接规则（必须区分两类）**：
-  - 「剧情承诺兑现」：上章钩子承诺的事件/信息必须在本章落地（硬性）
-  - 「意象/比喻传承」：**禁止原词复用**；若 `active_metaphors` 中该意象已用 ≥2 次，执行包的”禁止事项”必须写明”禁止直接使用[意象名]”，改用行动/结果/新感知替代
-  - 示例：上章钩子是”那根针”→ 本章承接方式是”苏绾音因此做了某个具体举动”，而不是再写”那根针还在”
+### Step 1-save：执行包存档（Step 1 完成后立即执行）
 
-输出：
-- 简洁的 5 板块”创作执行包”，供 Step 2A 直接消费。
+> 将执行包写入文件，供事后审查。失败不阻断后续流程。
 
-### Step 1-save：执行包存档（context-agent 返回后立即执行）
-
-> 将 context-agent 的完整返回文本写入文件，供事后审查使用。失败不阻断后续流程。
-
-```bash
-mkdir -p “${PROJECT_ROOT}/.webnovel/tmp”
-cat > “${PROJECT_ROOT}/.webnovel/tmp/execution_pack_ch${chapter_padded}.md” << 'PACK_EOF'
-{context-agent 的完整返回文本，原样粘贴}
-PACK_EOF
-```
-
-**实际执行方式**：context-agent 返回的是文字输出，主 agent 用 Write 工具将其写入：
+用 Write 工具写入：
 - 路径：`${PROJECT_ROOT}/.webnovel/tmp/execution_pack_ch{chapter_padded}.md`
-- 内容：context-agent 返回的完整文本，不裁剪、不摘要
-- 文件头追加一行：`<!-- 生成时间：{timestamp}，章节：第{chapter_num}章 -->`
+- 文件头追加：`<!-- 生成时间：{timestamp}，章节：第{chapter_num}章 -->`
 
-写入完成后输出：`✅ 执行包已存档：.webnovel/tmp/execution_pack_ch{chapter_padded}.md`
+写入后输出：`✅ 执行包已存档：.webnovel/tmp/execution_pack_ch{chapter_padded}.md`
 
-若 Write 失败，只记录警告，继续进入 Step 1.5。
-
-### Step 1.5：项目约束注入（已合并入 context-agent，无需主 agent 独立执行）
-
-> **2026-04-24 变更**：约束注入逻辑已合并入 context-agent 的 Step 4.5。context-agent 在组装执行包时会自动读取 CLAUDE.md 并将感情线阶段锁、伏笔时机锁、道具约束、预知能力规则直接嵌入板块4/5。主 agent 无需再独立执行此步骤。
->
-> 主 agent 在 Step 2A 起草前仍需确认执行包中包含约束信息（见"写作红线确认"）。
 
 ---
 
-### Step 2A：正文起草
+### Step 2：正文起草
 
 执行前必须加载：
 ```bash
@@ -268,7 +197,7 @@ cat "${SKILL_ROOT}/../../references/shared/core-constraints.md"
 [写作红线确认]
 
 1. 感情线阶段：{阶段名}
-   本章禁止行为：{列出 Step 1.5 提取的禁止清单}
+   本章禁止行为：{列出 Step 1 执行包中的禁止清单}
    ✅ 已确认执行包中无违规行为
 
 2. 伏笔保护：
@@ -327,59 +256,79 @@ cat "${SKILL_ROOT}/../../references/shared/core-constraints.md"
 输出：
 - 章节草稿（进入 Step 3）。
 
-### Step 3：审查（auto 路由，必须由 Task 子代理执行）
+### Step 3：内联审查 + 机械扫描（主 Agent 执行，无需子 Agent）
+
+> **2026-04-25 变更**：审查逻辑从独立子 Agent 合并回主 Agent。主 Agent 在 Step 2 起草后**已持有完整章节和上下文**，无需再开子 Agent 重新加载相同数据。条件审查器（reader-pull-checker / high-point-checker）仍在关键章时通过 Task 调用。
 
 执行前加载：
 ```bash
 cat "${SKILL_ROOT}/references/step-3-review-gate.md"
 ```
 
-调用约束：
-- 必须用 `Task` 调用审查 subagent，禁止主流程伪造审查结论。
-- 可并行发起审查，统一汇总 `issues/severity/overall_score`。
-- 默认使用 `auto` 路由：根据"本章执行合同 + 正文信号 + 大纲标签"动态选择审查器。
+#### Part A：主 Agent 内联审查（按审查清单逐项执行）
 
-核心审查器（始终执行，共 3 个 Task）：
-- `structural-checker`（内含 consistency-checker + continuity-checker）
-- `character-rhythm-checker`（内含 ooc-checker；pacing-checker 在 agent 内按章号条件触发）
-- `reader-quality-checker`（场景三增量/流水账检测/高潮质量评估）
+主 Agent 以审查者视角重新审视刚写完的章节，按以下维度输出结构化 JSON：
 
-条件审查器（仅在特定场景启用）：
-- `reader-pull-checker`（仅弧末章/卷末章/用户显式要求时启用，日常章节不跑）
-- `high-point-checker`（关键章/高潮章/卷末章/有高光信号时启用）
+**维度1：设定一致性（原 consistency-checker）**
+- 战力一致性：境界/能力是否与 state.json 一致
+- 地点一致性：移动路径是否合法
+- 时间线一致性：时间锚点是否连贯、有无回跳/倒计时错误
+- 叙事边界：有无第四面墙突破（ch编号/元叙事词汇）
 
-模式说明：
-- 标准：核心 3 个 Task + 条件审查器（按上述规则触发）
-- `--minimal`：只跑核心 2 个 Task（structural-checker + character-rhythm-checker，不含 reader-quality-checker 和条件审查器）
+**维度2：叙事连贯性（原 continuity-checker）**
+- 场景转换流畅度（A/B/C/F 四级）
+- 情节线连贯（引入未回收/无铺垫回收/遗忘线索）
+- 伏笔管理（短期/中期/长期）
+- 大纲一致性
 
-审查指标落库（必做）：
-```bash
-python -X utf8 "${SCRIPTS_DIR}/webnovel.py" --project-root "${PROJECT_ROOT}" index save-review-metrics --data "@${PROJECT_ROOT}/.webnovel/tmp/review_metrics.json"
+**维度3：角色一致性（原 ooc-checker）**
+- 角色行为与设定档案是否一致
+- 对话风格是否匹配
+- 角色成长 vs OOC 区分
+
+**维度4：精彩度（原 reader-quality-checker，`--minimal` 模式跳过此维度）**
+- 逐场景三增量检查（信息/情感/悬念）
+- 流水账检测（300字+场景且三增量均空）
+- 高潮质量（有结论无过程扣分）
+
+**维度5：节奏检查（章号 ≥ 10 时执行，否则跳过）**
+- Strand Weave 平衡：Quest/Fire/Constellation 占比
+- 连续同线检测
+
+**审查输出格式**：
+
+```
+[内联审查报告]
+
+维度1 设定一致性：{分数}/100
+- issues: [...]
+
+维度2 叙事连贯性：{分数}/100
+- issues: [...]
+
+维度3 角色一致性：{分数}/100
+- issues: [...]
+
+维度4 精彩度：{分数}/100
+- issues: [...]
+
+维度5 节奏：{分数}/100 （或"跳过"）
+- issues: [...]
+
+综合评分：{加权平均}
+严重问题：{N} 个
+高优先级：{N} 个
 ```
 
-review_metrics 字段约束（当前工作流约定只传以下字段）：
-```json
-{
-  "start_chapter": 100,
-  "end_chapter": 100,
-  "overall_score": 85.0,
-  "dimension_scores": {"爽点密度": 8.5, "设定一致性": 8.0, "节奏控制": 7.8, "人物塑造": 8.2, "连贯性": 9.0, "追读力": 8.7},
-  "severity_counts": {"critical": 0, "high": 1, "medium": 2, "low": 0},
-  "critical_issues": ["问题描述"],
-  "report_file": "审查报告/第100-100章审查报告.md",
-  "notes": "单个字符串；selected_checkers / timeline_gate / anti_ai_force_check 等扩展信息压成单行文本写入此字段"
-}
-```
-- `notes` 在当前执行契约中必须是单个字符串，不得传入对象或数组。
-- 当前工作流不额外传入其它顶层字段；脚本侧未在此处做新增硬校验。
+**硬性检查（自动化，必做）**：
 
-硬要求：
-- `--minimal` 也必须产出 `overall_score`。
-- 未落库 `review_metrics` 不得进入 Step 5。
+| 检查项 | 方法 | 不通过则 |
+|--------|------|---------|
+| 字数是否达标（2000-3000中文字符） | `python -X utf8 -c "import re;print(len(re.findall(r'[\u4e00-\u9fff]', open('正文/第{NNNN}章-xxx.md').read())))"` | 不足则修 |
+| 是否出现"chXX"章节号引用 | Grep 扫描 | 必须修 |
+| 是否出现 OOC 关键词 | 黑名单 Grep | 必须修 |
 
-### Step 3.5：机械扫描（必须用 Bash 执行，禁止跳过）
-
-**此步骤只做一件事：运行扫描脚本。** 不做任何修改，不做任何判断，只执行命令并记录输出。
+#### Part B：机械扫描（必须用 Bash 执行，禁止跳过）
 
 ```bash
 python3 "${SCRIPTS_DIR}/chapter_scan.py" "${PROJECT_ROOT}/正文/第${chapter_padded}章-${title_safe}.md"
@@ -389,12 +338,51 @@ python3 "${SCRIPTS_DIR}/chapter_scan.py" "${PROJECT_ROOT}/正文/第${chapter_pa
 - **必须用 Bash 工具执行上面这条命令**，不得用 grep、不得自行编写替代扫描、不得跳过
 - 脚本输出包含 ABCD 四层检查结果，是 Step 4 润色的**强制输入**
 - 将脚本的完整输出保存，在 Step 4 开头作为"扫描报告"引用
-- 若脚本执行失败（文件不存在等），记录警告并继续进入 Step 4，但需在变更摘要中注明"机械扫描未执行"
+- 若脚本执行失败，记录警告并继续进入 Step 4
 
-输出：
-- ABCD 四层扫描报告（传递给 Step 4）
+#### Part C：条件审查器（仅关键章触发，通过 Task 调用）
 
-### Step 4：润色（问题修复 + 风格转译，最多 2 轮）
+- `reader-pull-checker`：**仅在以下场景启用**（日常章节不跑）
+  - 弧末章（细纲标注的弧最后一章）
+  - 卷末章
+  - 用户显式要求"追读力审查"
+- `high-point-checker`：当满足任一条件时启用
+  - 关键章/高潮章/卷末章
+  - 正文出现战斗、反杀、打脸、身份揭露、大反转等高光信号
+
+条件审查器通过 Task 并行调用，返回后合并入审查报告。
+
+#### Part D：审查指标落库（必做）
+
+将审查结果写入 `review_metrics.json` 并落库：
+
+```bash
+python -X utf8 "${SCRIPTS_DIR}/webnovel.py" --project-root "${PROJECT_ROOT}" index save-review-metrics --data "@${PROJECT_ROOT}/.webnovel/tmp/review_metrics.json"
+```
+
+review_metrics 字段约束：
+```json
+{
+  "start_chapter": 100,
+  "end_chapter": 100,
+  "overall_score": 85.0,
+  "dimension_scores": {"设定一致性": 8.0, "连贯性": 9.0, "人物塑造": 8.2, "精彩度": 8.5, "节奏控制": 7.8},
+  "severity_counts": {"critical": 0, "high": 1, "medium": 2, "low": 0},
+  "critical_issues": ["问题描述"],
+  "report_file": "审查报告/第100-100章审查报告.md",
+  "notes": "selected_checkers=inline; 扩展信息压成单行文本写入此字段"
+}
+```
+
+**进入 Step 4 的闸门**：
+- `overall_score` 已生成
+- `save-review-metrics` 已成功
+- **时间线闸门**：若存在 `TIMELINE_ISSUE` 且 `severity >= high`，必须先修复再进入 Step 4
+- **第四面墙闸门**：若存在 `FOURTH_WALL_BREAK` 且 `severity >= high`，必须先修复再进入 Step 4
+
+### Step 4：润色（问题修复 + 风格转译，1 轮）
+
+> **2026-04-25 变更**：润色从最多 2 轮改为 1 轮。实测第 2 轮改动极少但要付出完整重读代价，性价比过低。未修复项记入变更摘要。
 
 执行前必须加载：
 ```bash
@@ -402,62 +390,39 @@ cat "${SKILL_ROOT}/references/polish-guide.md"
 cat "${SKILL_ROOT}/references/writing/typesetting.md"
 ```
 
-**润色轮次上限：最多 2 轮。** 第2轮结束后无论是否全部修复，必须停止并进入 Step 5，未修复项记入变更摘要。
-
-执行顺序：
-1. **引用 Step 3.5 的扫描报告**，ABC 层为强制修改清单，D 层为建议修改
-2. 修复 `critical`（必须）
-3. 修复 `high`（不能修复则记录 deviation）
-4. 处理 `medium/low`（按收益择优）
-5. **按扫描报告逐项修复**：A层短语重复 → B层句式词 → C层句式模式 → D层注水问题（建议，尽量修复）
-6. 执行风格转译（网文化，参见 polish-guide.md § 风格转译节）
-7. **Step 4-ext: 章末截断检查（新增，强制）**
-
-   **目的**：防止章节以"入睡+内心感悟"的 DAILY_CLOSE 模式收束，强制采用截断式结尾增强追读力。
-
-   **检查正文最后 100-200 字**：
-   - 若执行包板块1指定了`章末最后画面`：
-     - 确认正文以该画面收束，画面后无额外段落
-     - 若发现画面后还有"她躺在床上"/"望着帐顶"/"久久未眠"/"来日方长"等收束内容 → **强制删除**
-   - **DAILY_CLOSE 自动检测**：
-     - 扫描词：入睡、躺下、想（内心总结）、感悟、夜、月色、帐顶、未眠、来日方长、罢了、目光投向窗外（无后续行动）
-     - 若检测到且执行包要求非 DAILY_CLOSE → 标记为需要修复
-
-   **自动修复规则**：
-   - 【原文】...她躺在床上，望着帐顶，久久未眠。
-   - 【修复后】...她推开门，看见他站在廊下。"你怎么在这里？"
-   - 【原文】...她收回目光，转身向屋内走去。来日方长，不急在这一时。
-   - 【修复后】...她收回目光，转身向屋内走去。廊下的灯笼忽然晃了一下。
-
-   **截断类型指南**（按优先级选择）：
-   1. **ACTION_CUTOFF**：行动被打断/截断（"门忽然开了"/"身后传来脚步声"）
-   2. **DIALOGUE_CUTOFF**：对话戛然而止（问句未答/话到嘴边被打断）
-   3. **QUESTION_OPEN**：抛出新疑问（"那玉佩上的字，究竟是什么意思？"）
-   4. **CRISIS_UNRESOLVED**：危机未解除（对峙中/被困/昏迷前）
-   5. **POV_SWITCH**：切换到他人视角收章（他人看见她的背影）
-   **禁止**：DAILY_CLOSE（入睡/独处感悟/环境定格）作为默认选项
-
-8. 执行 Anti-AI 与 No-Poison 全文终检（必须输出 `anti_ai_force_check: pass/fail`）
+**润色 1 轮完成以下全部任务**：
+1. **保护【硬】约束检查**：标记【硬】约束事件位置，润色时绝对禁止删除
+2. **引用 Step 3 Part B 扫描报告**：ABC 层为强制修改清单，D 层为建议修改
+3. 修复 `critical`（必须）
+4. 修复 `high`（不能修复则记录 deviation）
+5. 处理 `medium/low`（按收益择优）
+6. 按扫描报告逐项修复：A层短语重复 → B层句式词 → C层句式模式 → D层注水问题
+7. 执行风格转译（网文化，参见 polish-guide.md § 风格转译节）
+8. **Step 4-ext: 章末截断检查**
+   - 若执行包板块1指定了`章末最后画面`：确认正文以该画面收束
+   - **DAILY_CLOSE 自动检测**：扫描词（入睡/躺下/帐顶/未眠/来日方长等），检测到则修复为截断式结尾
+9. 执行 Anti-AI 与 No-Poison 全文终检（必须输出 `anti_ai_force_check: pass/fail`）
+10. **【硬】约束复核**：润色后检查所有【硬】约束事件仍完整存在
 
 输出：
 - 润色后正文（覆盖章节文件）
-- 变更摘要（至少含：修复项、保留项、deviation、`anti_ai_force_check`）
+- 变更摘要（至少含：修复项、保留项、deviation、`anti_ai_force_check`、遗留问题）
 
 ### Step 5：Data Agent（状态与索引回写）
 
 使用 Task 调用 `data-agent`，参数：
 - `chapter`
-- `chapter_file` 必须传入实际章节文件路径；统一传 `正文/第{chapter_padded}章-{title_safe}.md`（标题已在 Step 2A 确定，无论来源是大纲还是自动生成）
+- `chapter_file` 必须传入实际章节文件路径；统一传 `正文/第{chapter_padded}章-{title_safe}.md`
 - `review_score=Step 3 overall_score`
 - `project_root`
 - `storage_path=.webnovel/`
 - `state_file=.webnovel/state.json`
 
-Data Agent 默认子步骤（全部执行）：
+Data Agent 子步骤（全部执行）：
 - A. 加载上下文
 - B. AI 实体提取
 - C. 实体消歧
-- D. 写入 state/index
+- D. 写入 state/index（含 chapter_meta、recent_openings、recent_endings、narrative_state 回写，一次性完成）
 - E. 写入章节摘要
 - F. AI 场景切片
 
@@ -474,14 +439,6 @@ Step 5 失败隔离规则：
 性能要求：
 - 读取 timing 日志最近一条；
 - 当 `TOTAL > 30000ms` 时，输出最慢 2-3 个环节与原因说明。
-
-观测日志说明：
-- `data_agent_timing.jsonl`：Data Agent 内部各子步骤耗时。
-- 当外层总耗时远大于内层 timing 之和时，默认先归因为 agent 启动与环境探测开销。
-
-### Step 5-ext：narrative_state 回写（已合并入 data-agent，无需主 agent 独立执行）
-
-> **2026-04-24 变更**：narrative_state 回写（反派状态/已知事实/里程碑）已合并入 data-agent 的 Step E-ext3。data-agent 在实体提取后一并处理，减少一次 state.json 读写。主 agent 无需再手动执行此步骤。
 
 ### Step 6：Git 备份（可失败但需说明）
 

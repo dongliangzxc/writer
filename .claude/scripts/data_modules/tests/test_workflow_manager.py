@@ -86,7 +86,7 @@ def test_workflow_step_owner_and_order_violation_trace(tmp_path, monkeypatch):
     webnovel_dir = tmp_path / ".webnovel"
     webnovel_dir.mkdir(parents=True, exist_ok=True)
 
-    assert module.expected_step_owner("webnovel-write", "Step 1") == "context-agent"
+    assert module.expected_step_owner("webnovel-write", "Step 1") == "main-agent-inline"
     assert module.expected_step_owner("webnovel-write", "Step 5") == "data-agent"
 
     module.start_task("webnovel-write", {"chapter_num": 12})

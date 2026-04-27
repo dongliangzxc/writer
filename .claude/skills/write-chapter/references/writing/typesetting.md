@@ -56,4 +56,4 @@
 6. 是否有“???/占位符正文”暴露给读者
 7. 场景切换是否清晰（空行/分隔/过渡句）
 8. 章内是否至少 1 个明确推进点（信息/行动/转折）
-9. 新实体首次出现是否写清楚（名字/身份/记忆点）；如需手动标注（可选）：使用隐藏 XML 标签（见 `/Users/dongliang04/Documents/个人/小说/女频/.claude/skills/webnovel-query/references/tag-specification.md`）
+9. 新实体首次出现是否写清楚（名字/身份/记忆点）；如需手动标注（可选）：使用隐藏 XML 标签（见 `.claude/skills/webnovel-query/references/tag-specification.md`）

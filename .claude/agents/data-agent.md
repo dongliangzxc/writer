@@ -70,7 +70,7 @@ model: inherit
 - `${SCRIPTS_DIR}/webnovel.py`
 
 ```bash
-export SCRIPTS_DIR="/Users/dongliang04/Documents/个人/小说/女频/.claude/scripts"
+export SCRIPTS_DIR="${WORKSPACE_ROOT}/.claude/scripts"
 python -X utf8 "${SCRIPTS_DIR}/webnovel.py" --project-root "{project_root}" preflight
 python -X utf8 "${SCRIPTS_DIR}/webnovel.py" --project-root "{project_root}" where
 ```
@@ -102,7 +102,9 @@ python -X utf8 "${SCRIPTS_DIR}/webnovel.py" --project-root "{project_root}" wher
 | 0.5 - 0.8 | 采用建议值，记录 warning |
 | < 0.5 | 标记待人工确认，不自动写入 |
 
-### Step D: 写入存储
+### Step D: 写入存储（合并所有 state 写入为一次操作）
+
+> **2026-04-25 变更**：原 Step D + E-ext + E-ext2 + E-ext3 的 state.json 写入合并为一次操作。读一次 state.json，修改所有字段，写一次。
 
  **写入 index.db (实体/别名/状态变化/关系)**:
  ```bash
@@ -112,19 +114,89 @@ python -X utf8 "${SCRIPTS_DIR}/webnovel.py" --project-root "{project_root}" wher
   python -X utf8 "${SCRIPTS_DIR}/webnovel.py" --project-root "{project_root}" index upsert-relationship --data '{...}'
  ```
 
- **更新精简版 state.json**:
+ **一次性更新 state.json**（所有字段合并写入）:
  ```bash
   python -X utf8 "${SCRIPTS_DIR}/webnovel.py" --project-root "{project_root}" state process-chapter --chapter 100 --data '{...}'
  ```
 
-写入内容：
+写入内容（一次 state 读写完成全部）：
 - 更新 `progress.current_chapter`
 - 更新 `protagonist_state`
 - 更新 `strand_tracker`
 - 更新 `disambiguation_warnings/pending`
 - **新增 `chapter_meta`**（钩子/模式/结束状态）
+- **recent_openings**（开头类型追踪，最多保留最近 5 章）
+- **recent_endings**（结尾模式追踪，最多保留最近 5 章）
+- **narrative_state 回写**（反派状态/已知事实/里程碑）
 
-### Step E: 生成章节摘要文件（新增）
+**state.json 瘦身规则（v5.5 引入）**：
+- `chapter_meta`：state.json 只保留最近 10 章，历史数据同步写入 `index.db.chapter_meta_archive`
+- `known_truths`：state.json 只保留最近 20 条，完整列表同步写入 `index.db.known_truths`
+- `strand_tracker.history`：只保留最近 10 条
+
+**写入 index.db 归档**（与 state.json 写入同步执行）：
+```bash
+# 归档 chapter_meta 到 DB
+python -X utf8 "${SCRIPTS_DIR}/webnovel.py" --project-root "{project_root}" index save-chapter-meta --data '{...}'
+
+# 归档 known_truths 到 DB（批量）
+python -X utf8 "${SCRIPTS_DIR}/webnovel.py" --project-root "{project_root}" index save-known-truths-batch --data '[{...}, ...]'
+```
+
+**查询历史数据**（当需要查早期章节的 meta 或 truths 时）：
+```bash
+# 查询单章元数据
+python -X utf8 "${SCRIPTS_DIR}/webnovel.py" --project-root "{project_root}" index get-chapter-meta --chapter 10
+
+# 查询最近 N 章元数据
+python -X utf8 "${SCRIPTS_DIR}/webnovel.py" --project-root "{project_root}" index get-recent-chapter-meta --limit 10
+
+# 查询章节范围元数据
+python -X utf8 "${SCRIPTS_DIR}/webnovel.py" --project-root "{project_root}" index get-chapter-meta-range --start 1 --end 50
+
+# 查询最近 N 条已知事实
+python -X utf8 "${SCRIPTS_DIR}/webnovel.py" --project-root "{project_root}" index get-known-truths --limit 20
+
+# 查询全部已知事实
+python -X utf8 "${SCRIPTS_DIR}/webnovel.py" --project-root "{project_root}" index get-all-known-truths
+```
+
+#### recent_openings 判断规则
+
+判断当前章开头类型（对照正文第一个有效段落）：
+
+| 类型标签 | 判断特征 |
+|---------|---------|
+| 晨光醒来 | 涉及"晨光/朝阳/日光透过窗"或"主角醒来/睁开眼" |
+| 对话开场 | 首句或首段以人物对话引入 |
+| 动作开场 | 主角的一个具体动作作为第一句（非起床动作） |
+| 物件开场 | 聚焦于一件具体物品引入场景 |
+| 时间戳开场 | 以"替嫁后第X日"等显式时间标记起笔 |
+| 危机信息开场 | 以急报、异常消息、突发事件作为首句 |
+| 静态画面开场 | 以场景或人物静态描写起笔 |
+
+#### recent_endings 判断规则
+
+判断当前章结尾类型（对照正文最后 150 字）：
+
+| 类型标签 | 判断特征 |
+|---------|---------|
+| 床上失眠 | "睡不着/翻来覆去/辗转"等床上情绪描写收尾 |
+| 窗外起兴 | "窗外月光如水/树影/风声"等静态环境收尾 |
+| 攥紧物件等待 | 攥紧血玉镯/衣角/袖口，等待某种感觉散去 |
+| 独白决定式 | 主角内心决定/计划收尾 |
+| 事件打断 | 意外事件/敲门声等外部刺激打断 |
+| 沉默悬念 | 对话后沉默/目光交汇，留下未解疑问 |
+| 纯情景留白 | 纯场景描写，无明确情绪落点 |
+
+#### narrative_state 回写规则
+
+分析三个维度：
+- **反派状态变化**：若无变化则保持原值不覆盖
+- **新增确定性信息**：必须是正文中明确呈现的事实，不可推断
+- **里程碑完成**：将完成的里程碑标记 `done=true` 和 `actual_chapter`
+
+### Step E: 生成章节摘要文件
 
 **输出路径**: `.webnovel/summaries/ch{NNNN}.md`
 
@@ -151,137 +223,6 @@ hook_strength: "strong"
 
 ## 承接点
 {下章衔接，30字}
-```
-
-### Step E-ext: recent_openings 回写（开头类型追踪）
-
-> 在摘要文件写入完成后，立即执行此步骤，更新 state.json 的开头类型历史记录，供下一章的 continuity-checker 使用。
-
-**执行方式**：Data Agent 直接修改 `state.json`，无需 CLI 命令。
-
-**判断当前章开头类型**（对照正文第一个有效段落，去除标题行）：
-
-| 类型标签 | 判断特征 |
-|---------|---------|
-| 晨光醒来 | 涉及"晨光/朝阳/日光透过窗"或"主角醒来/睁开眼/从床上起身"作为开场动作 |
-| 对话开场 | 首句或首段以人物对话引入（直接引号或冒号引出的话语） |
-| 动作开场 | 主角的一个具体动作作为第一句（非起床动作，如"放下茶盏""转身""抬眼"）|
-| 物件开场 | 聚焦于一件具体物品或礼物引入场景 |
-| 时间戳开场 | 以"替嫁后第X日""某月某日"等显式时间标记起笔 |
-| 危机信息开场 | 以急报、异常消息、突发事件作为首句或首段核心 |
-| 静态画面开场 | 以场景或人物静态描写起笔（环境/外貌，无动作/对话）|
-
-**写入规则**：
-
-```python
-# 伪代码示意，Data Agent 直接读写 state.json
-ns = state["protagonist_state"]["narrative_state"]
-recent = ns.setdefault("recent_openings", [])
-
-new_entry = {
-    "chapter": {chapter_num},
-    "opening_type": "{判断得到的类型标签}",
-    "first_line": "{正文第一个有效句（不超过30字）}"
-}
-
-recent.append(new_entry)
-# 只保留最近 5 章
-if len(recent) > 5:
-    recent = recent[-5:]
-ns["recent_openings"] = recent
-```
-
-**字段格式**（写入 `state.json → protagonist_state.narrative_state.recent_openings`）：
-```json
-[
-  {"chapter": 24, "opening_type": "危机信息开场", "first_line": "小姐。春桃的声音带着几分急切，从外间传进来"},
-  {"chapter": 25, "opening_type": "动作开场", "first_line": "次日清晨，梳妆完毕，苏绾音走出院门"},
-  {"chapter": 26, "opening_type": "物件开场", "first_line": "春桃捧着一只锦盒走进来，脸上掩不住笑意"}
-]
-```
-
-### Step E-ext2: recent_endings 回写（结尾模式追踪）
-
-> 与 E-ext 同期执行，在摘要写入后立即完成，供 reader-pull-checker 做跨章结尾模式对比。
-
-**判断当前章结尾类型**（对照正文最后 150 字，使用与 continuity-checker 5C 相同的分类标准）：
-
-| 类型标签 | 判断特征 |
-|---------|---------|
-|床上失眠| "睡不着/翻来覆去/辗转/攥紧…等待不安散去"等床上情绪描写收尾，且后无悬置 |
-|窗外起兴| "窗外月光如水/树影/风声"等静态环境意象收尾，且后无悬置 |
-|攥紧物件等待| 攥紧血玉镯/衣角/袖口，等待某种感觉/不安散去，无后续动作 |
-|独白决定式| 以主角内心决定/计划（"明日要…"/"她决定…"）收尾，无外部事件 |
-|事件打断| 意外事件/敲门声/脚步声等外部刺激打断当前情绪收尾（主动作被截断）|
-|沉默悬念| 对话后沉默/目光交汇/无言对视，留下未解疑问收尾 |
-|纯情景留白| 纯场景描写（烛火/夜色/远山），无明确情绪落点，无悬置 |
-
-> 判断优先级：若最后150字同时含多种特征，取**最后出现**的有效句对应的类型。
-
-**写入规则**：
-
-```python
-# 伪代码示意，Data Agent 直接读写 state.json
-ns = state["protagonist_state"]["narrative_state"]
-recent = ns.setdefault("recent_endings", [])
-
-new_entry = {
-    "chapter": {chapter_num},
-    "ending_type": "{判断得到的类型标签}",
-    "last_line": "{正文最后一个有效句（不超过30字）}"
-}
-
-recent.append(new_entry)
-# 只保留最近 5 章
-if len(recent) > 5:
-    recent = recent[-5:]
-ns["recent_endings"] = recent
-```
-
-**字段格式**（写入 `state.json → protagonist_state.narrative_state.recent_endings`）：
-```json
-[
-  {"chapter": 26, "ending_type": "OPEN_QUESTION", "last_line": "那光，她总觉得在哪里见过。"},
-  {"chapter": 27, "ending_type": "REVELATION_FLASH", "last_line": "像极了那日她在廊下看见的周瑾瑜的手。"},
-  {"chapter": 28, "ending_type": "OPEN_QUESTION", "last_line": "那么，这条暗红色的，是谁的？"}
-]
-```
-
-### Step E-ext3: narrative_state 回写（反派状态/已知事实/里程碑）
-
-> **2026-04-24 从 Step 5-ext 合并入 data-agent**。原由主 agent 单独执行，现由 data-agent 在实体提取后一并处理，减少一次 state.json 读写。
-
-**执行步骤**：
-
-1. 读取本章正文（已在 Step A 加载），分析以下三个维度：
-
-   **a) 反派状态变化**：本章各反派的状态是否有变化？（如"禁足中"→"联络镇南侯府"）
-   - 若无变化则保持原值不覆盖
-
-   **b) 新增确定性信息**：本章主角获得了哪些新的确定性信息？
-   - 必须是正文中明确呈现的事实，不可推断
-
-   **c) 里程碑完成**：本章完成了 `narrative_state.volume_milestones` 中的哪些里程碑？
-   - 对照正文判断，将完成的里程碑标记 `done=true` 和 `actual_chapter`
-
-2. 写入 `state.json`（与 Step D 的 state 写入合并，只写一次）：
-
-```python
-ns = state["protagonist_state"]["narrative_state"]
-
-# 反派状态
-if antagonist_updates:
-    ns.setdefault("antagonist_status", {}).update(antagonist_updates)
-
-# 已知事实
-if new_truths:
-    ns.setdefault("known_truths", []).extend(new_truths)
-
-# 里程碑
-for item in ns.get("volume_milestones", {}).get("items", []):
-    if item["id"] in completed_milestone_ids:
-        item["done"] = True
-        item["actual_chapter"] = chapter_num
 ```
 
 ### Step F: AI 场景切片

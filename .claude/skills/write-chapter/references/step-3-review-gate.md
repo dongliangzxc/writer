@@ -1,111 +1,84 @@
-# Step 3 Review Gate
+# Step 3 Review Gate（内联审查版）
 
-## 调用约束（硬规则）
+> **2026-04-25 变更**：审查从独立子 Agent 改为主 Agent 内联执行。主 Agent 在 Step 2 起草后已持有完整章节和上下文，直接按维度审查，省去 3-5 次子 Agent 的重复上下文加载。
 
-- 必须使用 `Task` 调用审查 subagent，禁止主流程直接内联"自审结论"。
-- 审查任务可并行发起，必须在全部返回后统一聚合。
-- `overall_score` 必须来自聚合结果，不可主观估分。
-- 单章写作场景下，统一传入：`{chapter, chapter_file, project_root}`。
+## 设计理由
 
-## 合并检查器说明（Token 优化）
+原方案：3 个核心子 Agent（structural-checker + character-rhythm-checker + reader-quality-checker）并行执行，每个独立加载章节正文+state+大纲。
+问题：同一章文本被加载 3-5 次，仅审查步骤的输入 token 就占总量 ~40%。
+新方案：主 Agent 自审，上下文零额外加载，条件审查器仍保留为 Task。
 
-为减少 Task 启动开销，核心检查器已合并为两个联合 agent：
+## 内联审查维度
 
-| 联合 Agent | 包含检查器 | 执行条件 |
-|------------|-----------|---------|
-| `structural-checker` | consistency-checker + continuity-checker | 始终执行 |
-| `character-rhythm-checker` | ooc-checker + pacing-checker | 始终执行（pacing 在 agent 内按章号条件触发） |
+### 维度1：设定一致性（原 consistency-checker）
 
-每个联合 agent 输出两份独立 JSON（以 `## {checker-name} 结果` 分隔），聚合时按分隔符拆分处理。
+检查三层 + 叙事边界：
 
-## 审查路由模式
+| 层级 | 检查内容 | issue 类型 |
+|------|---------|-----------|
+| 战力 | 境界/能力与 state.json 一致 | POWER_CONFLICT |
+| 地点 | 移动路径合法 | LOCATION_ERROR |
+| 时间线 | 锚点连贯、无回跳/倒计时错误 | TIMELINE_ISSUE |
+| 叙事边界 | 无 ch编号/元叙事词汇 | FOURTH_WALL_BREAK |
 
-- 标准/`--fast`：`auto` 路由（核心 2 个联合 agent + 条件命中的独立审查器）。
-- `--minimal`：只跑 2 个核心联合 agent（不启用 reader-quality-checker 及条件审查器）。
+时间线 severity 参照：
 
-核心审查器（始终执行，共 3 次 Task）：
-- `structural-checker`（= consistency-checker + continuity-checker）
-- `character-rhythm-checker`（= ooc-checker + pacing-checker，pacing 在 agent 内按条件执行）
-- `reader-quality-checker`（= 精彩度检查：场景三增量/流水账检测/高潮质量评估）
+| 问题类型 | severity |
+|---------|----------|
+| 倒计时算术错误（D-5 跳 D-2） | critical |
+| 事件先后矛盾 / 年龄冲突 / 时间回跳 / 大跨度无过渡 | high |
+| 时间锚点缺失 | medium |
+| 轻微时间模糊 | low |
 
-条件审查器（仅在特定场景启用，共 0-2 次 Task）：
-- `reader-pull-checker`
-- `high-point-checker`
+### 维度2：叙事连贯性（原 continuity-checker）
 
-## Auto 路由判定信号
+| 检查项 | 评级/标准 |
+|--------|----------|
+| 场景转换流畅度 | A/B/C/F 四级 |
+| 情节线连贯 | 引入未回收/无铺垫回收/遗忘线索（>15章） |
+| 伏笔管理 | 短期1-3章/中期4-10章/长期10+章 |
+| 大纲一致性 | 轻微可接受/中等标记确认/重大标记deviation |
 
-输入信号来源：
-1. 大纲标签（关键章/高潮章/卷末章/弧末章）。
-2. 本章正文（战斗/反转/高光等信号）。
-3. 用户显式要求。
+### 维度3：角色一致性（原 ooc-checker）
 
-路由规则：
-- `reader-pull-checker`：**仅在以下场景启用**（日常章节不跑）
-  - 弧末章（细纲标注的弧最后一章）；
-  - 卷末章；
-  - 用户显式要求"追读力审查"。
-- `high-point-checker`：当满足任一条件时启用
-  - 关键章/高潮章/卷末章；
-  - 正文出现战斗、反杀、打脸、身份揭露、大反转等高光信号。
+三级判定：
 
-> `pacing-checker` 已内置于 `character-rhythm-checker`，由其内部按章号（≥10）和 strand_tracker 历史自动触发，不再作为独立条件审查器。
+| 级别 | 定义 | 处理 |
+|------|------|------|
+| 轻微偏离 | 有合理世界观内解释 | 记录，可通过 |
+| 中度失真 | 缺乏充分铺垫 | 标记 warning |
+| 严重崩坏 | 与既定特征完全相反且无解释 | 必须修复 |
 
-## Task 调用模板（示意）
+包含对话风格校验：角色口吻与设定档案匹配。
 
-```text
-# 核心联合 agent（始终并行发起，共 3 个 Task）
-selected = ["structural-checker", "character-rhythm-checker", "reader-quality-checker"]
+### 维度4：精彩度（原 reader-quality-checker，`--minimal` 模式跳过）
 
-# 条件独立审查器（auto 路由追加）
-if mode != "minimal":
-  if trigger_reader_pull: selected.append("reader-pull-checker")
-  if trigger_high_point:  selected.append("high-point-checker")
+- 逐场景三增量检查（信息/情感/悬念）
+- 流水账检测：300字+场景且三增量均空 + 连续3句无情绪描写 → dead_weight
+- 高潮质量：有结论无过程 → `high_scene_lacks_detail: true`，扣10分
+- quality_rate = 有价值场景数 / 总场景数
 
-parallel Task(agent, {chapter, chapter_file, project_root}) for agent in selected
-```
+### 维度5：节奏检查（章号 ≥ 10 时执行）
 
-## 联合 Agent 输出聚合规则
+- Strand Weave 平衡：Quest/Fire/Constellation 理想占比 55-65% / 20-30% / 10-20%
+- 违规检测：Quest 过载（连续5+章 high）、Fire 干旱（>10章 medium）、Constellation 缺席（>15章 low）
 
-联合 agent 输出格式（以 `structural-checker` 为例）：
-```
-## consistency-checker 结果
-{ ...标准 schema JSON... }
+## 条件审查器（仍通过 Task 调用）
 
-## continuity-checker 结果
-{ ...标准 schema JSON... }
-```
+日常章节不跑，仅在特定场景启用：
 
-聚合时：
-1. 按 `## {checker-name} 结果` 分隔符拆分，提取各子 JSON。
-2. `skipped: true` 的子结果（如 pacing 未触发时）跳过 issues 统计，在 `notes` 中记录。
-3. 其余子结果与独立 agent 结果统一处理，合并 `issues`、计算 `dimension_scores`、取加权平均 `overall_score`。
+| 审查器 | 触发条件 |
+|--------|---------|
+| `reader-pull-checker` | 弧末章 / 卷末章 / 用户显式要求 |
+| `high-point-checker` | 关键章/高潮章/卷末章 / 正文有高光信号 |
 
-## 输出契约（统一）
+## 审查输出聚合
 
-每个 checker 返回值必须遵循 `/Users/dongliang04/Documents/个人/小说/女频/.claude/references/checker-output-schema.md`：
-- 必含：`agent`、`chapter`、`overall_score`、`pass`、`issues`、`metrics`、`summary`
-- 允许扩展字段（如 `hard_violations`、`soft_suggestions`），但不得替代必填字段
-
-聚合输出最小字段：
-- `chapter`（单章）
-- `start_chapter`、`end_chapter`（单章时二者都等于 `chapter`）
-- `selected_checkers`
-- `overall_score`
-- `severity_counts`
-- `critical_issues`
-- `issues`（扁平化聚合）
-- `dimension_scores`（按已启用 checker 计算）
-
-## 汇总输出模板
-
-```text
-审查汇总 - 第 {chapter_num} 章
-- 已启用审查器: {list}
-- 严重问题: {N} 个
-- 高优先级问题: {N} 个
-- 综合评分: {score}
-- 可进入润色: {是/否}
-```
+内联审查 + 条件 Task 结果统一聚合为：
+- `overall_score`（加权平均）
+- `dimension_scores`（按维度）
+- `severity_counts`（critical/high/medium/low）
+- `issues`（扁平化列表）
 
 ## 审查指标落库（必做）
 
@@ -113,77 +86,28 @@ parallel Task(agent, {chapter, chapter_file, project_root}) for agent in selecte
 python -X utf8 "${SCRIPTS_DIR}/webnovel.py" --project-root "${PROJECT_ROOT}" index save-review-metrics --data "@${PROJECT_ROOT}/.webnovel/tmp/review_metrics.json"
 ```
 
-review_metrics 文件字段约束（当前工作流约定只传以下字段）：
+字段约束：
 - `start_chapter`（int）、`end_chapter`（int）：单章时二者相等
 - `overall_score`（float）：必填
-- `dimension_scores`（Dict[str, float]）：按已启用 checker 计算
-- `severity_counts`（Dict[str, int]）：键为 critical / high / medium / low
+- `dimension_scores`（Dict[str, float]）
+- `severity_counts`（Dict[str, int]）
 - `critical_issues`（List[str]）
 - `report_file`（str）
-- `notes`（str）：在当前执行契约中必须是单个字符串；`selected_checkers`、`timeline_gate`、`anti_ai_force_check` 等扩展信息统一压成单行文本写入此字段，不得作为独立顶层键传入
-- 当前工作流不额外传入其它顶层字段；脚本侧未在此处做新增硬校验
-
-## 审查清单（逐项执行）
-
-### 第一层：硬性检查（自动化，必做）
-
-执行完所有审查 Task 后，主 agent 必须逐项确认：
-
-| 检查项 | 方法 | 不通过则 |
-|--------|------|---------|
-| 字数是否达标（2000-3000中文字符，高潮章按需超出不追究） | `python -X utf8 -c "import re;print(len(re.findall(r'[\u4e00-\u9fff]', open(' 正文/第0032章-xxx.md').read())))"` | 不足则修 |
-| 是否出现"chXX"章节号引用 | `grep -E "ch[0-9]" 正文/` | 必须修 |
-| 是否出现 OOC 关键词（"问了她就说"等） | 黑名单 grep | 必须修 |
-
-> 第二层~第四层内容审查和审查报告模板已移除（2026-04-24）。
-> 场景密度/情节推进/人物行为/对话质量/重复检查/读者收获/细纲对照/时间线推进
-> 已由 structural-checker、character-rhythm-checker、reader-quality-checker、chapter_scan.py 完全覆盖。
+- `notes`（str）：扩展信息压成单行文本
 
 ## 进入 Step 4 前闸门
 
-- `overall_score` 已生成。
-- `save-review-metrics` 已成功。
-- 审查报告中的 `issues`、`severity_counts` 可被 Step 4 直接消费。
-- **时间线闸门（新增）**：若存在 `TIMELINE_ISSUE` 且 `severity >= high`，禁止进入 Step 4/5，必须先修复。
-- **第四面墙闸门（新增）**：若存在 `FOURTH_WALL_BREAK` 且 `severity >= high`，禁止进入 Step 4/5，必须先修复。
+- `overall_score` 已生成
+- `save-review-metrics` 已成功
+- **时间线闸门**：`TIMELINE_ISSUE` + `severity >= high` → 必须先修复
+- **第四面墙闸门**：`FOURTH_WALL_BREAK` + `severity >= high` → 必须先修复
 
-### 时间线闸门规则
+### 时间线修复指引
+- 倒计时错误 → 修正倒计时推进
+- 时间回跳 → 添加闪回标记或调整锚点
+- 大跨度无过渡 → 添加过渡句/段
+- 事件先后矛盾 → 调整事件顺序
 
-**Hard Block（必须修复才能继续）**：
-- `TIMELINE_ISSUE` + `severity = critical`（倒计时算术错误）
-- `TIMELINE_ISSUE` + `severity = high`（事件先后矛盾/年龄冲突/时间回跳/大跨度无过渡）
-
-**Soft Warning（建议修复但可继续）**：
-- `TIMELINE_ISSUE` + `severity = medium`（时间锚点缺失）
-- `TIMELINE_ISSUE` + `severity = low`（轻微时间模糊）
-
-**闸门判定逻辑**：
-```text
-timeline_issues = filter(issues, type="TIMELINE_ISSUE")
-critical_timeline = filter(timeline_issues, severity in ["critical", "high"])
-
-if len(critical_timeline) > 0:
-    BLOCK: "存在 {len(critical_timeline)} 个严重时间线问题，必须修复后才能进入润色步骤"
-    for issue in critical_timeline:
-        print(f"- 第{issue.chapter}章: {issue.description}")
-    return BLOCKED
-else:
-    通过: "时间线检查通过"
-```
-
-**修复指引**：
-- 倒计时错误 → 修正倒计时推进，确保 D-N → D-(N-1) 连续
-- 时间回跳 → 添加闪回标记，或调整时间锚点
-- 大跨度无过渡 → 添加时间过渡句/段，或插入过渡章
-- 事件先后矛盾 → 调整事件发生顺序或添加时间跳跃说明
-
-### 第四面墙闸门规则
-
-**Hard Block（必须修复才能继续）**：
-- `FOURTH_WALL_BREAK` + `severity = high`（正文中出现章节编号如"ch44"、"ch47"等）
-- `FOURTH_WALL_BREAK` + `severity = critical`（角色道具中出现元小说引用，如"第3章"、"上一章"等）
-
-**修复指引**：
-- 章节编号 → 改为叙事内时间描述（如"四月中"、"赏花宴前"、"今晨"、"昨日"）
-- 元小说引用 → 改为角色视角的自然记录（如"上月替嫁坦白"、"赏花宴上应对从容"）
-- 叙述者提及"读者"、"本章" → 改为角色内心独白或场景动作
+### 第四面墙修复指引
+- 章节编号 → 改为叙事内时间描述（"四月中"、"赏花宴前"）
+- 元小说引用 → 改为角色视角的自然记录

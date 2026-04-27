@@ -225,6 +225,32 @@ class WritingChecklistScoreMeta:
     notes: str = ""
 
 
+@dataclass
+class ChapterMetaArchive:
+    """章节元数据归档（v5.5 引入，从 state.json 迁移）"""
+
+    chapter: int
+    opening_type: str = ""
+    hook_type: str = ""
+    hook_content: str = ""
+    hook_strength: str = ""
+    emotion_rhythm: str = ""
+    info_density: str = ""
+    ending_time: str = ""
+    ending_location: str = ""
+    ending_emotion: str = ""
+    meta_json: str = ""  # 完整 JSON，保留原始数据
+
+
+@dataclass
+class KnownTruthRecord:
+    """已知事实记录（v5.5 引入，从 state.json 迁移）"""
+
+    chapter: int
+    content: str
+    category: str = ""  # 人物/势力/世界观/关系/事件
+
+
 class IndexManager(IndexChapterMixin, IndexEntityMixin, IndexDebtMixin, IndexReadingMixin, IndexObservabilityMixin):
     """索引管理器"""
 
@@ -617,6 +643,39 @@ class IndexManager(IndexChapterMixin, IndexEntityMixin, IndexDebtMixin, IndexRea
                 "CREATE INDEX IF NOT EXISTS idx_checklist_score_value ON writing_checklist_scores(score)"
             )
 
+            # 章节元数据归档表（v5.5 引入，从 state.json 迁移）
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS chapter_meta_archive (
+                    chapter INTEGER PRIMARY KEY,
+                    opening_type TEXT DEFAULT '',
+                    hook_type TEXT DEFAULT '',
+                    hook_content TEXT DEFAULT '',
+                    hook_strength TEXT DEFAULT '',
+                    emotion_rhythm TEXT DEFAULT '',
+                    info_density TEXT DEFAULT '',
+                    ending_time TEXT DEFAULT '',
+                    ending_location TEXT DEFAULT '',
+                    ending_emotion TEXT DEFAULT '',
+                    meta_json TEXT DEFAULT '{}',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # 已知事实表（v5.5 引入，从 state.json 迁移）
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS known_truths (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chapter INTEGER NOT NULL,
+                    content TEXT NOT NULL,
+                    category TEXT DEFAULT '',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(chapter, content)
+                )
+            """)
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_known_truths_chapter ON known_truths(chapter)"
+            )
+
             conn.commit()
 
     @contextmanager
@@ -630,6 +689,101 @@ class IndexManager(IndexChapterMixin, IndexEntityMixin, IndexDebtMixin, IndexRea
             conn.close()
 
     # ==================== 章节操作 ====================
+
+    # ==================== v5.5 章节元数据归档 & 已知事实 ====================
+
+    def save_chapter_meta_archive(self, meta: ChapterMetaArchive):
+        """保存章节元数据到归档表"""
+        with self._get_conn() as conn:
+            conn.execute(
+                """INSERT INTO chapter_meta_archive
+                   (chapter, opening_type, hook_type, hook_content, hook_strength,
+                    emotion_rhythm, info_density, ending_time, ending_location,
+                    ending_emotion, meta_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(chapter) DO UPDATE SET
+                    opening_type=excluded.opening_type, hook_type=excluded.hook_type,
+                    hook_content=excluded.hook_content, hook_strength=excluded.hook_strength,
+                    emotion_rhythm=excluded.emotion_rhythm, info_density=excluded.info_density,
+                    ending_time=excluded.ending_time, ending_location=excluded.ending_location,
+                    ending_emotion=excluded.ending_emotion, meta_json=excluded.meta_json""",
+                (meta.chapter, meta.opening_type, meta.hook_type, meta.hook_content,
+                 meta.hook_strength, meta.emotion_rhythm, meta.info_density,
+                 meta.ending_time, meta.ending_location, meta.ending_emotion, meta.meta_json),
+            )
+            conn.commit()
+
+    def get_chapter_meta_archive(self, chapter: int) -> Optional[Dict]:
+        """获取单章元数据"""
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM chapter_meta_archive WHERE chapter = ?", (chapter,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def get_recent_chapter_meta(self, limit: int = 10) -> List[Dict]:
+        """获取最近N章元数据"""
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM chapter_meta_archive ORDER BY chapter DESC LIMIT ?", (limit,)
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_chapter_meta_range(self, start: int, end: int) -> List[Dict]:
+        """获取章节范围内的元数据"""
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM chapter_meta_archive WHERE chapter BETWEEN ? AND ? ORDER BY chapter",
+                (start, end),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def save_known_truth(self, truth: KnownTruthRecord) -> int:
+        """保存已知事实"""
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                """INSERT INTO known_truths (chapter, content, category)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(chapter, content) DO NOTHING""",
+                (truth.chapter, truth.content, truth.category),
+            )
+            conn.commit()
+            return cursor.lastrowid or 0
+
+    def save_known_truths_batch(self, truths: List[KnownTruthRecord]):
+        """批量保存已知事实"""
+        with self._get_conn() as conn:
+            conn.executemany(
+                """INSERT INTO known_truths (chapter, content, category)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(chapter, content) DO NOTHING""",
+                [(t.chapter, t.content, t.category) for t in truths],
+            )
+            conn.commit()
+
+    def get_known_truths(self, limit: int = 20) -> List[Dict]:
+        """获取最近N条已知事实"""
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM known_truths ORDER BY chapter DESC, id DESC LIMIT ?", (limit,)
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_known_truths_by_chapter(self, chapter: int) -> List[Dict]:
+        """获取某章新增的已知事实"""
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM known_truths WHERE chapter = ? ORDER BY id", (chapter,)
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_all_known_truths(self) -> List[Dict]:
+        """获取全部已知事实"""
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM known_truths ORDER BY chapter, id"
+            ).fetchall()
+            return [dict(r) for r in rows]
 
 # ==================== CLI 接口 ====================
 
@@ -665,6 +819,44 @@ def main():
     search_parser = subparsers.add_parser("search-scenes")
     search_parser.add_argument("--location", required=True)
     search_parser.add_argument("--limit", type=int, default=None)
+
+    # ==================== v5.5 章节元数据归档 & 已知事实 ====================
+
+    # 保存章节元数据归档
+    save_meta_parser = subparsers.add_parser("save-chapter-meta")
+    save_meta_parser.add_argument("--data", required=True, help="JSON 格式的章节元数据")
+
+    # 查询单章元数据
+    get_meta_parser = subparsers.add_parser("get-chapter-meta")
+    get_meta_parser.add_argument("--chapter", type=int, required=True)
+
+    # 查询最近N章元数据
+    recent_meta_parser = subparsers.add_parser("get-recent-chapter-meta")
+    recent_meta_parser.add_argument("--limit", type=int, default=10)
+
+    # 查询章节范围元数据
+    range_meta_parser = subparsers.add_parser("get-chapter-meta-range")
+    range_meta_parser.add_argument("--start", type=int, required=True)
+    range_meta_parser.add_argument("--end", type=int, required=True)
+
+    # 保存已知事实
+    save_truth_parser = subparsers.add_parser("save-known-truth")
+    save_truth_parser.add_argument("--data", required=True, help="JSON 格式的已知事实")
+
+    # 批量保存已知事实
+    save_truths_parser = subparsers.add_parser("save-known-truths-batch")
+    save_truths_parser.add_argument("--data", required=True, help="JSON 数组格式的已知事实列表")
+
+    # 查询最近已知事实
+    get_truths_parser = subparsers.add_parser("get-known-truths")
+    get_truths_parser.add_argument("--limit", type=int, default=20)
+
+    # 查询某章已知事实
+    get_truths_ch_parser = subparsers.add_parser("get-known-truths-by-chapter")
+    get_truths_ch_parser.add_argument("--chapter", type=int, required=True)
+
+    # 查询全部已知事实
+    subparsers.add_parser("get-all-known-truths")
 
     # 处理章节数据 (写入)
     process_parser = subparsers.add_parser("process-chapter")
@@ -1301,6 +1493,74 @@ def main():
         )
         manager.save_chapter_reading_power(meta)
         emit_success({"chapter": meta.chapter}, message="reading_power_saved")
+
+    # ==================== v5.5 章节元数据归档 & 已知事实 ====================
+
+    elif args.command == "save-chapter-meta":
+        data = load_json_arg(args.data)
+        meta = ChapterMetaArchive(
+            chapter=data["chapter"],
+            opening_type=data.get("opening_type", ""),
+            hook_type=data.get("hook_type", ""),
+            hook_content=data.get("hook_content", ""),
+            hook_strength=data.get("hook_strength", ""),
+            emotion_rhythm=data.get("emotion_rhythm", ""),
+            info_density=data.get("info_density", ""),
+            ending_time=data.get("ending_time", ""),
+            ending_location=data.get("ending_location", ""),
+            ending_emotion=data.get("ending_emotion", ""),
+            meta_json=json.dumps(data.get("meta_json", data), ensure_ascii=False),
+        )
+        manager.save_chapter_meta_archive(meta)
+        emit_success({"chapter": meta.chapter}, message="chapter_meta_saved")
+
+    elif args.command == "get-chapter-meta":
+        record = manager.get_chapter_meta_archive(args.chapter)
+        if record:
+            emit_success(record, message="chapter_meta")
+        else:
+            emit_error("NOT_FOUND", f"未找到第 {args.chapter} 章的元数据归档")
+
+    elif args.command == "get-recent-chapter-meta":
+        records = manager.get_recent_chapter_meta(args.limit)
+        emit_success(records, message="recent_chapter_meta")
+
+    elif args.command == "get-chapter-meta-range":
+        records = manager.get_chapter_meta_range(args.start, args.end)
+        emit_success(records, message="chapter_meta_range")
+
+    elif args.command == "save-known-truth":
+        data = load_json_arg(args.data)
+        truth = KnownTruthRecord(
+            chapter=data["chapter"],
+            content=data["content"],
+            category=data.get("category", ""),
+        )
+        truth_id = manager.save_known_truth(truth)
+        emit_success({"id": truth_id, "chapter": truth.chapter}, message="known_truth_saved")
+
+    elif args.command == "save-known-truths-batch":
+        data_list = load_json_arg(args.data)
+        truths = [
+            KnownTruthRecord(
+                chapter=d["chapter"], content=d["content"], category=d.get("category", "")
+            )
+            for d in data_list
+        ]
+        manager.save_known_truths_batch(truths)
+        emit_success({"count": len(truths)}, message="known_truths_batch_saved")
+
+    elif args.command == "get-known-truths":
+        records = manager.get_known_truths(args.limit)
+        emit_success(records, message="known_truths")
+
+    elif args.command == "get-known-truths-by-chapter":
+        records = manager.get_known_truths_by_chapter(args.chapter)
+        emit_success(records, message="known_truths_by_chapter")
+
+    elif args.command == "get-all-known-truths":
+        records = manager.get_all_known_truths()
+        emit_success(records, message="all_known_truths")
 
     else:
         emit_error("UNKNOWN_COMMAND", "未指定有效命令", suggestion="请查看 --help")

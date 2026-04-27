@@ -9,12 +9,12 @@ model: inherit
 
 > **职责**: 读者满足感机制的质量保障专家（爽点设计）。
 
-> **输出格式**: 遵循 `/Users/dongliang04/Documents/个人/小说/女频/.claude/references/checker-output-schema.md` 统一 JSON Schema
+> **输出格式**: 遵循 `.claude/references/checker-output-schema.md` 统一 JSON Schema
 
 ## 核心参考
 
-- **分类法**: `/Users/dongliang04/Documents/个人/小说/女频/.claude/references/reading-power-taxonomy.md`
-- **题材画像**: `/Users/dongliang04/Documents/个人/小说/女频/.claude/references/genre-profiles.md`
+- **分类法**: `.claude/references/reading-power-taxonomy.md`
+- **题材画像**: `.claude/references/genre-profiles.md`
 
 ## 检查范围
 

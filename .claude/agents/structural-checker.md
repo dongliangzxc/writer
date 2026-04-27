@@ -92,7 +92,7 @@ model: inherit
 对 `critical` 问题自动标记到 `invalid_facts`（状态 `pending`）：
 
 ```bash
-python -X utf8 "/Users/dongliang04/Documents/个人/小说/女频/.claude/scripts/webnovel.py" \
+python -X utf8 "${WORKSPACE_ROOT}/.claude/scripts/webnovel.py" \
   --project-root "{PROJECT_ROOT}" index mark-invalid \
   --source-type entity \
   --source-id {entity_id} \

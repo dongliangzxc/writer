@@ -110,7 +110,7 @@ def expected_step_owner(command: str, step_id: str) -> str:
     """
     if command == "webnovel-write":
         mapping = {
-            "Step 1": "context-agent",
+            "Step 1": "main-agent-inline",
             "Step 1.5": "webnovel-write-skill",
             "Step 2A": "writer-draft",
             "Step 2B": "style-adapter",
